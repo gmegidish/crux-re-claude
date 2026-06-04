@@ -1,0 +1,44 @@
+# Build output
+*.o
+*.obj
+*.exe
+*.dll
+*.lib
+*.pdb
+
+# Keep the RE target binary
+!CRUX.EXE
+
+# IDE
+.vs/
+*.user
+*.suo
+
+# OS
+.DS_Store
+Thumbs.db
+.claude/scheduled_tasks.lock
+
+# SDL2 port build output
+port/crux
+port/*.o
+port/*.ppm
+port/*.png
+
+# headless video frame dumps (written to repo root by the SDL port)
+/INTRO*.ppm
+/INTRO*.png
+*.ppm
+*.png
+/port/crux_asan
+/port/*.dSYM
+/port/*.d
+
+# Game data (copyrighted, not redistributable) — root-anchored so it does NOT
+# match the reversed source in src/ (e.g. src/ADVENT.cpp).
+/ADVENT.*
+/SENTENCE.BIN
+*.BIN
+
+# SDL port build tools
+port/dumpprog
