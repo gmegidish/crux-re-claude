@@ -45,6 +45,8 @@ private:
     std::vector<std::string> playlist_;   // SCM list built by 0x78, played+cleared by 0x71
     std::string lastMusic_;               // PLAY_MUSIC dedup guard (DAT_00629880)
     int  scriptFlag_ = 0;                 // DAT_00629f54: set by 0x84f, read by 0x857
+    int  curAnimSlot_ = -1;               // DAT_007c4108: "STANI" register — anim slot
+                                          // selected by op 0x3f for later named-anim ops
     std::vector<int> fkeyCmd_, fkeyKey_;  // 0x179: F-key shortcut -> command registry (max 15)
     std::vector<int> objectList_;         // scene node/object presence list (queried by 0x6f);
                                           // populated by the not-yet-ported object-display ops
@@ -54,6 +56,7 @@ private:
     // (nextArea_/playlist_) — a stack-smash. Guard it and log.
     int& var(int i);
 
+    bool pumpFrame();                    // op 0x3b: advance/render one paced frame; false = stop
     void fadeToBlack(int msPerStep);     // op 0x204: smooth palette fade-out
     void showSpeech(const std::string& cp1255);   // op 0xcd: display a subtitle for its duration
     int  skipBlock(const ScriptProgram& p, int pc, bool stopAtElse) const;

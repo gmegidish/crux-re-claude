@@ -38,10 +38,13 @@ int32_t recordInt(int node, int w) {
     return g_records[(size_t)node * kRecordInts + w];
 }
 
-// The byte at record offset 0x11 lives in bits 16-23 of p[4] (the flags int).
+// Enabled byte. The engine tests `((flags << 16) >> 24) == 0` (AREAS.cpp
+// Area_FindAt), which extracts bits 8-15 of p[4] — i.e. the byte at record
+// offset 0x11. (An earlier version read bits 16-23 / byte 0x12, which is the
+// WRONG byte and filtered out every clickable node.)
 int enabledByte(int node) {
     int32_t flags = recordInt(node, kFlags);
-    return (int)((flags >> 16) & 0xff);
+    return (int)((flags >> 8) & 0xff);
 }
 
 } // namespace
@@ -116,4 +119,45 @@ int Area::verbHandler(int node, int verb) {
 
 int Area::count() {
     return g_count;
+}
+
+// Mirror of RunProg_Exec cases 0x7 (value 0) / 0x8 (value 1): walk every node,
+// and for those tagged `tag` (p[5]) whose enabled byte (bits 8-15 of p[4])
+// differs from `value`, rewrite that byte while preserving the rest of p[4]
+// (the engine's CONCAT22(...high half..., ...) keeps the high 16 bits and the
+// low cursor-id byte). The engine guards the write on the current byte != target
+// (0x7: != 0, 0x8: != 1), so we only count a change when it really flips.
+bool Area::setEnabledByteByTag(int tag, int value) {
+    bool changed = false;
+    const int32_t want = (int32_t)(value & 0xff);
+    for (int node = 0; node < g_count; ++node) {
+        if (recordInt(node, 5) != tag) {
+            continue;
+        }
+        int32_t& flags = g_records[(size_t)node * kRecordInts + kFlags];
+        if (((flags >> 8) & 0xff) == want) {
+            continue;
+        }
+        flags = (flags & ~0x0000ff00) | (want << 8);
+        changed = true;
+    }
+    return changed;
+}
+
+bool Area::nodeInfo(int node, NodeInfo& out) {
+    if (node < 0 || node >= g_count) {
+        return false;
+    }
+    out.x1 = recordInt(node, kBboxX1);
+    out.y1 = recordInt(node, kBboxY1);
+    out.x2 = recordInt(node, kBboxX2);
+    out.y2 = recordInt(node, kBboxY2);
+    out.flags = recordInt(node, kFlags);
+    out.cursor = out.flags & 0xff;
+    out.enabledByte = enabledByte(node);
+    out.tag = recordInt(node, 5);
+    out.type = recordInt(node, kType);
+    out.z = recordInt(node, kZPriority);
+    out.hittable = (out.type != kTypeExcluded) && (out.enabledByte == 0);
+    return true;
 }

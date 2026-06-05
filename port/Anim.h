@@ -41,6 +41,11 @@ void setVisible(int slot, bool visible);     // show/hide in drawAll
 bool        active(int slot);                 // is this slot in use?
 const char* slotName(int slot);               // resource name, or "" if inactive
 
+// Current frame index of an active, non-frozen slot; -1 if the slot is inactive
+// or frozen (matches Anim_GetCurrentFrame @0x004019fb, which returns -1 unless
+// (flags & active) && freezeCount == 0).
+int         getCurrentFrame(int slot);
+
 // On-screen bounding box of `slot`'s current frame (the painted pixels), in
 // framebuffer coordinates. Returns false for an empty/blank frame. Used to turn
 // a flower anim into a hover hotspot.

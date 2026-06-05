@@ -31,6 +31,13 @@
 #include <map>
 #include <strings.h>
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-function"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#define STBIW_ASSERT(x)
+#include "stb_image_write.h"
+#pragma clang diagnostic pop
+
 static std::string dataDir = ".";
 
 static void hexdump(const std::vector<uint8_t>& d, size_t n) {
@@ -117,7 +124,7 @@ struct MenuButton {
 // the LIT/glowing sprite and "...2" is the DIM idle sprite — so idle flowers show
 // "...2" and the hovered flower lights up to "...1". The hover rect is the idle
 // flower's painted pixels (whole-flower bbox); the lit sprite starts hidden.
-static std::vector<MenuButton> buildMenuButtons() {
+static std::vector<MenuButton> buildMenuButtons(const Scene& scene) {
     std::vector<MenuButton> btns;
     for (int s = 0; s < Anim::MAX_SLOTS; ++s) {
         if (!Anim::active(s)) { continue; }
@@ -129,13 +136,33 @@ static std::vector<MenuButton> buildMenuButtons() {
         b.normalSlot    = idle;          // shown by default (dim)
         b.highlightSlot = s;             // shown on hover (lit/glow)
         if (!Anim::frameBounds(b.normalSlot, b.x, b.y, b.w, b.h)) { continue; }
-        // The flowers are area-nodes 0..5 in add order (each rect-less, hotspot
-        // from the anim); the i-th flower added maps to node i.
-        b.node = (int)btns.size();
+        b.node = -1;                     // resolved by anim-link below
         Anim::setVisible(b.highlightSlot, false);     // glow hidden until hovered
-        Log::info("menu button %zu: idle %s / lit %s node %d rect=(%d,%d %dx%d)", btns.size(),
-                  Anim::slotName(b.normalSlot), name.c_str(), b.node, b.x, b.y, b.w, b.h);
         btns.push_back(b);
+    }
+    // Link each flower to the area-node whose verb-0 handler controls that flower's
+    // idle anim (MN_*2). The .SCN node order is NOT the flower add-order — e.g. OPT
+    // is node 4 and EXIT is node 5, but flowers are added EXIT-then-OPT — so we must
+    // match by the anim the handler touches, not by index.
+    for (int node = 0; node < Area::count(); ++node) {
+        const ScriptProgram* p = scene.program(Area::verbHandler(node, 0));
+        if (p == nullptr) { continue; }
+        std::string animNm;
+        for (const ScriptInsn& in : p->insns) {
+            if (in.op == 0x195 || in.op == 0x191 || in.op == 0x13c || in.op == 0x13d) {
+                animNm = scene.animName(in.a0);
+                break;
+            }
+        }
+        if (animNm.empty()) { continue; }
+        for (auto& b : btns) {
+            if (animNm == Anim::slotName(b.normalSlot)) { b.node = node; break; }
+        }
+    }
+    for (size_t i = 0; i < btns.size(); ++i) {
+        Log::info("menu button %zu: idle %s / lit %s -> node %d rect=(%d,%d %dx%d)", i,
+                  Anim::slotName(btns[i].normalSlot), Anim::slotName(btns[i].highlightSlot),
+                  btns[i].node, btns[i].x, btns[i].y, btns[i].w, btns[i].h);
     }
     return btns;
 }
@@ -146,6 +173,85 @@ static int hitMenuButton(const std::vector<MenuButton>& btns, int mx, int my) {
         if (mx >= b.x && mx < b.x + b.w && my >= b.y && my < b.y + b.h) { return i; }
     }
     return -1;
+}
+
+// 5x7 bitmap font, digits 0-9 only (MSB = leftmost column of 5).
+static const uint8_t kDigit5x7[10][7] = {
+    {0x1E,0x11,0x13,0x15,0x19,0x11,0x1E}, // 0
+    {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E}, // 1
+    {0x1E,0x11,0x01,0x0E,0x10,0x10,0x1F}, // 2
+    {0x1F,0x01,0x02,0x06,0x01,0x11,0x0E}, // 3
+    {0x02,0x06,0x0A,0x12,0x1F,0x02,0x02}, // 4
+    {0x1F,0x10,0x1E,0x01,0x01,0x11,0x0E}, // 5
+    {0x06,0x08,0x10,0x1E,0x11,0x11,0x0E}, // 6
+    {0x1F,0x01,0x02,0x04,0x08,0x08,0x08}, // 7
+    {0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E}, // 8
+    {0x0E,0x11,0x11,0x0F,0x01,0x02,0x0C}, // 9
+};
+
+// Write an RGB888 pixel into an interleaved buffer (no-op if out of bounds).
+static void putRgb(uint8_t* rgb, int x, int y, uint8_t r, uint8_t g, uint8_t b) {
+    if (x < 0 || x >= Framebuffer::W || y < 0 || y >= Framebuffer::H) { return; }
+    uint8_t* p = rgb + ((size_t)y * Framebuffer::W + x) * 3;
+    p[0] = r; p[1] = g; p[2] = b;
+}
+
+// Draw a base-10 integer at (x,y) in the given color, returning the x advance.
+static void drawNumber(uint8_t* rgb, int x, int y, int value, uint8_t r, uint8_t g, uint8_t b) {
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "%d", value);
+    for (const char* c = buf; *c; ++c) {
+        if (*c < '0' || *c > '9') { continue; }
+        const uint8_t* glyph = kDigit5x7[*c - '0'];
+        for (int row = 0; row < 7; ++row) {
+            for (int col = 0; col < 5; ++col) {
+                if (glyph[row] & (0x10 >> col)) {
+                    // 1px black outline behind each lit pixel for legibility.
+                    putRgb(rgb, x + col,     y + row,     r, g, b);
+                }
+            }
+        }
+        x += 6;
+    }
+}
+
+// Dump a 640x480 PNG of the area nodes: the backdrop in grey, every node's
+// bbox outlined (green = hit-testable, red = filtered out), labelled with its
+// index. Also logs each node's fields. Gated by the AREA_PNG env var (path).
+static void dumpAreaPng(const Framebuffer& bg, const char* path) {
+    std::vector<uint8_t> rgb((size_t)Framebuffer::W * Framebuffer::H * 3);
+    // Backdrop, dimmed to ~40% so the coloured boxes stand out.
+    const uint8_t* pal = bg.palette();
+    const uint8_t* px = bg.pixels();
+    for (int i = 0; i < Framebuffer::W * Framebuffer::H; ++i) {
+        const uint8_t* c = &pal[px[i] * 3];
+        rgb[i*3+0] = (uint8_t)(c[0] * 4 / 10);
+        rgb[i*3+1] = (uint8_t)(c[1] * 4 / 10);
+        rgb[i*3+2] = (uint8_t)(c[2] * 4 / 10);
+    }
+
+    Log::info("--- area nodes (%d) ---", Area::count());
+    for (int n = 0; n < Area::count(); ++n) {
+        Area::NodeInfo ni;
+        if (!Area::nodeInfo(n, ni)) { continue; }
+        Log::info("  node %2d: bbox=(%d,%d)-(%d,%d) tag=%d type=%d z=%d cursor=%d en=0x%02x %s",
+                  n, ni.x1, ni.y1, ni.x2, ni.y2, ni.tag, ni.type, ni.z, ni.cursor,
+                  ni.enabledByte, ni.hittable ? "HIT" : "filtered");
+        uint8_t r = ni.hittable ? 0   : 255;
+        uint8_t g = ni.hittable ? 255 : 40;
+        uint8_t b = 40;
+        // Rectangle outline.
+        for (int x = ni.x1; x <= ni.x2; ++x) { putRgb(rgb.data(), x, ni.y1, r, g, b); putRgb(rgb.data(), x, ni.y2, r, g, b); }
+        for (int y = ni.y1; y <= ni.y2; ++y) { putRgb(rgb.data(), ni.x1, y, r, g, b); putRgb(rgb.data(), ni.x2, y, r, g, b); }
+        // Index label just inside the top-left corner.
+        drawNumber(rgb.data(), ni.x1 + 2, ni.y1 + 2, n, 255, 255, 0);
+    }
+
+    if (stbi_write_png(path, Framebuffer::W, Framebuffer::H, 3, rgb.data(), Framebuffer::W * 3)) {
+        Log::info("wrote area map: %s", path);
+    } else {
+        Log::error("failed to write area map: %s", path);
+    }
 }
 
 // Interactive scene loop: compose the z-ordered anims each frame and present,
@@ -168,7 +274,7 @@ static std::string runScene(Scene& scene, RunProg& vm, Display& disp,
     Cursor::loadMode(arc, 3, "CURSINV");                 // inventory
     Cursor::loadMode(arc, 9, "CURSHOUR");                // wait / hourglass
 
-    std::vector<MenuButton> buttons = buildMenuButtons();
+    std::vector<MenuButton> buttons = buildMenuButtons(scene);
 
     // Background plate = palette + backdrop, WITHOUT the flowers. The flowers are
     // re-drawn each frame so hovering can swap a flower's normal anim for its
@@ -176,6 +282,10 @@ static std::string runScene(Scene& scene, RunProg& vm, Display& disp,
     fb.clear(0);
     Anim::blitResourceFrame0(arc, fb, areaName.c_str(), 6, 0, 0);      // area backdrop
     std::vector<uint8_t> bgPlate(fb.pixels(), fb.pixels() + (size_t)fb.width() * fb.height());
+
+    // Optional area-node map: AREA_PNG=<path> dumps a 640x480 PNG of every node's
+    // bbox over the (dimmed) backdrop, plus a per-node field log.
+    if (const char* ap = std::getenv("AREA_PNG")) { dumpAreaPng(fb, ap); }
 
     int animTick = 0;
     for (;;) {
@@ -394,7 +504,10 @@ int main(int argc, char** argv) {
     // the next area. Starts at "entry" (the bootstrap that branches to "menu",
     // where the startup logos play). The variable file persists across areas.
     RunProg vm(arc, disp, fb);
+    // START_AREA jumps straight to a named area (skips the intro chain) — handy
+    // for headless diagnostics like AREA_PNG.
     std::string area = "entry";
+    if (const char* sa = std::getenv("START_AREA")) { area = sa; }
     while (!area.empty() && strcasecmp(area.c_str(), "__end__") != 0) {
         Scene scene;
         if (!scene.load(arc, area.c_str())) break;

@@ -274,6 +274,54 @@ void play(const char* track, const char* label) {
     g_active = (g_room != 0);
 }
 
+// Theme_MusicEvent (THEMES.cpp @0x00479c20). The engine: bails if g_nThmReady==0 or
+// music is disabled; finds the event name in the per-channel label/event-range tables
+// (DAT_007d0ef8/DAT_007d1538), then by the matched record's transition mode (pEntry):
+//   1/2/default -> Thm_Play(target, ext) immediately
+//   3/4         -> queue pending + Theme_StartFadeOut(3000)
+//   5           -> queue pending as endseg (wait for seg boundary)
+//   7           -> loop: re-dispatch after PrepNextSeg
+// pEntry[2] (themeIdx) is the target track (-1 = keep current); pEntry[3] (extIdx) is a
+// label/extension (-1 = none). The deferred fade/queue state machine (g_nThemePendingCmd,
+// the background-thread seg-boundary handoff) isn't ported, so the deferred modes collapse
+// to the same immediate switch as 1/2 here — faithful to the resulting track, minus the
+// fade transition. We match against the current track's parsed event table (g_theme.events)
+// rather than the engine's global channel-range table, which isn't ported.
+void musicEvent(const char* eventName) {
+    if (!g_ready || eventName == nullptr) { return; }
+
+    // Find the event record by name (Thm_FindLabel over the event-name table).
+    const ThemeFile::Event* ev = nullptr;
+    for (const auto& e : g_theme.events) {
+        if (e.nameIdx >= 0 && e.nameIdx < (int)g_theme.eventNames.size() &&
+            strcasecmp(g_theme.eventNames[e.nameIdx].c_str(), eventName) == 0) {
+            ev = &e;
+            break;
+        }
+    }
+    if (ev == nullptr) {
+        // No table entry: the engine plays the event name itself as a track (transMode
+        // 1, szName=eventName). We have no such track resource, so just log and skip.
+        Log::info("Theme::musicEvent: no event '%s' in track '%s'", eventName,
+                  g_currentTrack.c_str());
+        return;
+    }
+
+    // Resolve the target track (themeIdx -1 = keep current) and the optional label.
+    const char* target = g_currentTrack.c_str();
+    if (ev->themeIdx >= 0 && ev->themeIdx < (int)g_theme.themeNames.size()) {
+        target = g_theme.themeNames[ev->themeIdx].c_str();
+    }
+    const char* label = (ev->extIdx >= 0 && ev->extIdx < (int)g_theme.labels.size())
+                            ? g_theme.labels[ev->extIdx].c_str() : nullptr;
+
+    if (ev->transMode >= 3 && ev->transMode <= 7) {
+        Log::info("Theme::musicEvent '%s': deferred mode %d -> immediate switch to '%s'",
+                  eventName, ev->transMode, target);
+    }
+    play(target, label);
+}
+
 void stopMusic() {
     g_active = false;
     g_currentTrack = g_nextTrack;               // engine's Current = Next on stop

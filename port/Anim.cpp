@@ -157,6 +157,15 @@ void setCurrentFrame(int slot, int frame) {
     }
 }
 
+// Anim_GetCurrentFrame @0x004019fb: curFrame iff (flags & active) && freezeCount==0,
+// else -1. Our `frozen` bool stands in for the engine's freezeCount != 0.
+int getCurrentFrame(int slot) {
+    if (slot >= 0 && slot < MAX_SLOTS && g_slots[slot].active && !g_slots[slot].frozen) {
+        return g_slots[slot].curFrame;
+    }
+    return -1;
+}
+
 void freeze(int slot) {
     if (slot >= 0 && slot < MAX_SLOTS) { g_slots[slot].frozen = true; }
 }

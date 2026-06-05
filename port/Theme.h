@@ -68,6 +68,12 @@ int  getRoom();
 // top when null), and begin streaming when a room is active.
 void play(const char* track, const char* label);
 
+// Theme_MusicEvent (op 0x16c, THEMES.cpp @0x00479c20): fire a named music-transition
+// event against the current track. The engine looks the name up in the track's
+// event table and, per the matched record's transition mode, switches/queues a new
+// segment or target track. Returns early if the system isn't ready.
+void musicEvent(const char* eventName);
+
 // Theme_StopMusic (op 0x1a): stop playback and reset the current track to the
 // idle baseline.
 void stopMusic();
