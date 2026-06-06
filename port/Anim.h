@@ -41,6 +41,20 @@ void setVisible(int slot, bool visible);     // show/hide in drawAll
 bool        active(int slot);                 // is this slot in use?
 const char* slotName(int slot);               // resource name, or "" if inactive
 
+// --- accessors used by the SLIDER subsystem (Slider.cpp) ---
+// Number of frames in `slot`'s animation (== engine g_anAnimFrameCount[slot]);
+// 0 if the slot is inactive.
+int  frameCount(int slot);
+// The CURRENT frame's per-frame {x,y} offset (frame.x/frame.y) — matches engine
+// Anim_GetFrameTopLeft. Writes (0,0) for an inactive/out-of-range slot.
+void getFrameTopLeft(int slot, int& x, int& y);
+// The slot's screen position (slotX/slotY == engine g_anAnimSlotX/Y[slot]).
+void slotPos(int slot, int& x, int& y);
+// Engine Anim_SetFrameStep(slot, step): 0 pauses auto-advance (freeze), nonzero
+// resumes it. The port has no per-tick step magnitude, so we model the only two
+// values the slider uses: 0 = freeze, !=0 = resetFreeze.
+void setFrameStep(int slot, int step);
+
 // Current frame index of an active, non-frozen slot; -1 if the slot is inactive
 // or frozen (matches Anim_GetCurrentFrame @0x004019fb, which returns -1 unless
 // (flags & active) && freezeCount == 0).

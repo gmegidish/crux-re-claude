@@ -1,4 +1,5 @@
 #include "Area.h"
+#include "Anim.h"
 #include "Log.h"
 #include <cstring>
 #include <vector>
@@ -26,6 +27,12 @@ const int kTypeExcluded = 2; // type==2 => excluded from hit-test
 // Flat array of records, kRecordInts ints each. Owned (copied at load).
 std::vector<int32_t> g_records;
 int g_count = 0;
+
+// LINKFULL sprite-area links (RunProg op 0x169/0x2c3 -> g_anAreaSpriteList). Each
+// links an anim slot's painted frame bbox to a node, resolved by tag at hit time (so
+// it's independent of node-load order). flags 0 = immediate hit. Engine caps at 20.
+struct SpriteLink { int animSlot; int tag; int flags; };
+std::vector<SpriteLink> g_sprites;
 
 // Read one int32 from record `node` at word index `w`. Bounds-safe.
 int32_t recordInt(int node, int w) {
@@ -67,9 +74,77 @@ void Area::load(const uint8_t* records, int count) {
 void Area::clear() {
     g_records.clear();
     g_count = 0;
+    g_sprites.clear();
+}
+
+int Area::findNodeByTag(int tag) {
+    for (int node = 0; node < g_count; ++node) {
+        if (recordInt(node, 5) == tag) {
+            return node;
+        }
+    }
+    return -1;
+}
+
+void Area::linkFull(int animSlot, int tag, int flags) {
+    // Engine fatally asserts a current STANI slot ("No stani to LINKFULL to"); we guard.
+    if (animSlot < 0) {
+        return;
+    }
+    // Engine cap (0x14): "too many moving areas".
+    if (g_sprites.size() >= 20) {
+        return;
+    }
+    g_sprites.push_back({ animSlot, tag, flags });
+}
+
+void Area::clearSprites() {
+    g_sprites.clear();
+}
+
+int Area::spriteCount() {
+    return (int)g_sprites.size();
+}
+
+bool Area::spriteInfo(int i, int& animSlot, int& node, int& flags) {
+    if (i < 0 || i >= (int)g_sprites.size()) {
+        return false;
+    }
+    const SpriteLink& s = g_sprites[i];
+    animSlot = s.animSlot;
+    node = findNodeByTag(s.tag);
+    flags = s.flags;
+    return true;
 }
 
 int Area::hitTest(int x, int y) {
+    // Dynamic LINKFULL sprite-areas first (engine Area_FindAt step 1): the hit-rect is
+    // the linked anim's painted frame bbox (Anim::frameBounds), resolved to the node by
+    // tag. flags==0 is an immediate hit; flags!=0 is a lower-priority candidate (the
+    // engine z-orders those via the character walk-table, which the port doesn't model,
+    // so the static nodes win over a flags!=0 sprite; last-registered wins among them).
+    int spriteBest = -1;
+    for (int i = (int)g_sprites.size(); i-- > 0; ) {
+        const SpriteLink& s = g_sprites[i];
+        int bx, by, bw, bh;
+        if (!Anim::frameBounds(s.animSlot, bx, by, bw, bh)) {
+            continue;
+        }
+        if (x < bx || x > bx + bw || y < by || y > by + bh) {
+            continue;
+        }
+        int node = findNodeByTag(s.tag);
+        if (node < 0) {
+            continue;
+        }
+        if (s.flags == 0) {
+            return node;            // immediate hit
+        }
+        if (spriteBest < 0) {
+            spriteBest = node;
+        }
+    }
+
     int best = -1;
     int32_t bestZ = 0;
     for (int node = 0; node < g_count; ++node) {
@@ -95,7 +170,7 @@ int Area::hitTest(int x, int y) {
             bestZ = z;
         }
     }
-    return best;
+    return (best >= 0) ? best : spriteBest;
 }
 
 int Area::cursorId(int node) {

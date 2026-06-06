@@ -126,6 +126,58 @@ AREAS.cpp is the **spatial hit-testing and node-management layer**, not a room-g
 **Depends on:** READRES.cpp (node data loaded from resources), DDRAWI.cpp (CS)  
 **Used by:** MOVEMENT.cpp (walk nodes), ADVENT.cpp (click dispatch), CURSORS.cpp (cursor shape)
 
+### Area-node record layout (0xB0 = 44 int32s) — verified vs binary + live data
+
+`Files_LoadScn` (FILES.cpp, see Except.cpp) reads `[u32 count]` then `count × 0xB0`
+records **straight off disk into the runtime struct** (`Res_BunchFreadNow(p,1,0xb0)`),
+so the on-disk record IS the in-memory record — no transform. Word index = byte/4:
+
+| words | field | source of truth |
+|---|---|---|
+| `[0..3]` | bbox x1,y1,x2,y2 (absolute, inclusive) | `Area_FindAt` `node[0]≤x≤node[2]`, `node[1]≤y≤node[3]` |
+| `[4]` | flags — low byte = cursor id; **bits 8-15 (byte 0x11) = enabled byte (0 ⇒ hittable)** | `Area_FindAt` `(node[4]<<0x10)>>0x18 == 0` |
+| `[5]` | tag (script-facing node id) | `Area_FindNodeByTag`, `Adv_SetInvSlot` field `[5]` |
+| `[6..0x14]` | handler-program-id array (15) | `Adv_FindVerbHandler` returns `node[k+6]` |
+| `[0x15..0x23]` | verb-code array (15), parallel to handlers | `Adv_FindVerbHandler` matches `node[k+0x15]` |
+| `[0x24]` | z / priority (higher wins) | `Area_FindAt` `node[0x24]` |
+| `[0x25]` | type/kind (`==2` ⇒ excluded from hit-test) | `Area_FindAt` `node[0x25]!=2`, `Adv_InitAreaSlots` |
+
+**The SDL port (`port/Area.cpp`) matches this exactly.** Confirmed by dumping live
+MENU/MAP nodes (sane bboxes, `node=(0,0,640,480) z=1000`, sequential tags) and by an
+independent raw `.SCN` parse that consumes the file to the exact byte. *Area/program
+parsing is NOT a source of bugs.* (An older port read bits 16-23/byte 0x12 for the
+enabled byte and filtered out every clickable node — already fixed.)
+
+### Verb model (from `Adv_CursorHandler` 0x0040eec0) — drives all interaction
+
+`Adv_CursorHandler` sets `*pVerb` then `Adv_FindVerbHandler(node, verb)` runs `node`'s
+handler program for that verb:
+
+| verb | trigger |
+|---|---|
+| `0` | left click |
+| `1` | right click (only if `[Mouse] RightCLick` ini ≠ 0) |
+| `2` | middle click |
+| `4` | **mouse-ENTER** a hotspot (fired by `Adv_UpdateHotspot`, not a click) |
+| `6` | **mouse-LEAVE** a hotspot |
+| `5` | hover-hold (seen in data; emitted by `Adv_UpdateHotspot`) |
+| `8` | idle / pending timer program |
+| `10` | hotspot changed while a button is held |
+| `0xb` | keyboard shortcut (key→area map) |
+
+**Edge/corner EXIT nodes carry ONLY a verb-4 handler (no verb-0).** You trigger them by
+*moving the cursor into* the edge hotspot → the verb-4 program walks the char to the
+edge (op `0x150` walk-to + `0x65` GOSUB) → next room. Example (MAP): corner nodes 6/8/15/16
+have `verb 0 → -1`, `verb 4 → progs 22/28/59/60`; `exitNames=[doors,villa,thing,telecom,gazbig,roads]`.
+
+**⚠ Port bug — "click exit → wrong room":** `port/main.cpp` only dispatches verb 0 (left)
+/ 1 (right) on a click and **never fires verb 4/6 on hotspot enter/leave**, so edge exits
+are unreachable by their intended path; a click instead resolves to the full-screen
+background node (e.g. MAP node 9, `verb 0 → prog 33`) → wrong/unexpected transition. The
+fix is in the interaction layer (fire verb 4/6 on hotspot change), **not** in parsing.
+The port also omits `Area_FindAt`'s sprite-area list (`Anim_GetCurrentFrameRect` dynamic
+bbox), which is how `(-1,-1,-1,-1)` anim nodes (menu flowers, characters) become hittable.
+
 ---
 
 ## ✅ BANI.cpp — Block-animation image codec

@@ -44,6 +44,7 @@ struct Reader {
 } // namespace
 
 bool Scene::load(ResArchive& arc, const char* name) {
+    name_ = name ? name : "";
     // Resolve the type-4 .SCN entry (names repeat across types).
     const ResEntry* e = nullptr;
     for (const auto& en : arc.entries())
@@ -54,13 +55,15 @@ bool Scene::load(ResArchive& arc, const char* name) {
     if (blob.empty()) { Log::error("Scene '%s': empty/failed read", name); return false; }
     Reader r{ blob.data(), blob.data() + blob.size() };
 
-    // -- format tag: 3 signature chars + version byte --
-    char sig[4] = {0};
-    sig[0] = (char)r.u8(); sig[1] = (char)r.u8(); sig[2] = (char)r.u8();
-    int version = r.u8();
+    // -- format tag: a single 4-byte little-endian version int (1 or 2). --
+    //    Matches Files_LoadScn (Except.cpp): it reads 4 bytes, then branches on the
+    //    whole int — `local_128[0] == 1` ⇒ old format (1-byte on-the-fly list counts),
+    //    `== 2` ⇒ new (4-byte counts). Reading the version from the 4th byte instead
+    //    (an earlier port) mis-detected old-format scenes. All shipped .SCNs are v2.
+    int version = r.i32();
     bool oldFormat = (version == 1);
-    Log::info("Scene '%s': sig='%.3s' version=%d (%s) %zu bytes",
-              name, sig, version, oldFormat ? "old" : "new", blob.size());
+    Log::info("Scene '%s': version=%d (%s) %zu bytes",
+              name, version, oldFormat ? "old" : "new", blob.size());
 
     // -- 7 string tables --
     areaCacheNames_ = r.stringTable();

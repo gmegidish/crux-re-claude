@@ -187,6 +187,35 @@ const char* slotName(int slot) {
     return g_slots[slot].name.c_str();
 }
 
+int frameCount(int slot) {
+    if (slot < 0 || slot >= MAX_SLOTS || !g_slots[slot].active) { return 0; }
+    return (int)g_slots[slot].frames.size();
+}
+
+void getFrameTopLeft(int slot, int& x, int& y) {
+    x = 0;
+    y = 0;
+    if (slot < 0 || slot >= MAX_SLOTS || !g_slots[slot].active) { return; }
+    const Slot& s = g_slots[slot];
+    if (s.curFrame < 0 || s.curFrame >= (int)s.frames.size()) { return; }
+    x = s.frames[s.curFrame].x;
+    y = s.frames[s.curFrame].y;
+}
+
+void slotPos(int slot, int& x, int& y) {
+    x = 0;
+    y = 0;
+    if (slot < 0 || slot >= MAX_SLOTS) { return; }
+    x = g_slots[slot].x;
+    y = g_slots[slot].y;
+}
+
+void setFrameStep(int slot, int step) {
+    if (slot < 0 || slot >= MAX_SLOTS) { return; }
+    if (step == 0) { g_slots[slot].frozen = true; }
+    else { g_slots[slot].frozen = false; }
+}
+
 bool frameBounds(int slot, int& x, int& y, int& w, int& h) {
     if (slot < 0 || slot >= MAX_SLOTS || !g_slots[slot].active) { return false; }
     const Slot& s = g_slots[slot];

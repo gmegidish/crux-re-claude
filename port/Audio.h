@@ -21,6 +21,9 @@ constexpr int VOICE0 = 1;  // 0x80-0x83 SCM bunch-audio voices: the engine plays
 constexpr int VOICE1 = 2;  // 3 concurrent voice channels (mixer ids 1/2/3), summed; the
 constexpr int VOICE2 = 3;  // channel index is the chunk's param LOW byte (not the type).
 constexpr int THEME  = 4;  // room-music sequencer (persists across SCM reset())
+constexpr int SFX    = 5;  // looping room sound-effect (op 0x15 PLAY_SOUND, engine FX
+                           // channel 3); persists across SCM reset(), cleared on area
+                           // change / op 0x16f (Fx_StopLoop) / op 0x132 (stop tracked).
 
 bool open();
 void close();
@@ -45,6 +48,10 @@ void clearChannel(int channel);
 // mono), bit2 = 44100 Hz (else 22050). The source is converted to the device's
 // mono 22050 S16 (stereo downmixed, 44100 decimated).
 void queue(int channel, const uint8_t* data, size_t bytes, int fmt);
+
+// Mark a channel as looping: when its queue drains, the read cursor wraps to the
+// start instead of stopping (used for the op-0x15 room SFX). clearChannel clears it.
+void setLoop(int channel, bool loop);
 
 // Clear all channels (called when a new SCM starts).
 void reset();

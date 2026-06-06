@@ -15,7 +15,13 @@
 //   p[0x25]      type/kind. type==2 => excluded from hit-test.
 //   p[0x26..0x2b] unused for hit-test.
 //
-// Verb codes: 0=look (left click), 1=use (right click), 2=middle.
+// Verb codes (from Adv_CursorHandler @0x0040eec0): 0=left click, 1=right click,
+// 2=middle click, 4=mouse-ENTER hotspot, 5=hover-hold, 6=mouse-LEAVE hotspot,
+// 8=idle/timer, 10=hotspot-changed-while-held, 0xb=keyboard shortcut. Verbs 4/6 are
+// fired by Adv_UpdateHotspot on hotspot change, NOT by a click. Edge/corner EXIT
+// nodes carry ONLY a verb-4 handler (no verb-0): they trigger on cursor-enter, which
+// walks the character to the screen edge and transitions rooms. The current port only
+// dispatches verb 0/1 on click, so those exits aren't reachable by their real path.
 #pragma once
 #include <cstdint>
 
@@ -32,6 +38,24 @@ void clear();
 // enabled (byte 0x11 == 0), and AABB-containing (x,y), returns the index of the
 // one with the highest z/priority (p[0x24]). Returns -1 if none match.
 int hitTest(int x, int y);
+
+// Node index whose tag (p[5]) == `tag`, or -1 (engine Area_FindNodeByTag).
+int findNodeByTag(int tag);
+
+// LINKFULL (RunProg op 0x169 flags=0 / 0x2c3 flags=1): register the anim in slot
+// `animSlot` as a dynamic clickable hotspot whose hit-rect is the anim's painted
+// frame bbox (Anim::frameBounds), resolving to the node whose tag == `tag` at hit
+// time. Mirrors the engine's g_anAreaSpriteList; hitTest() checks these before the
+// static nodes. Capped at 20 ("too many moving areas").
+void linkFull(int animSlot, int tag, int flags);
+
+// Drop all LINKFULL links (call on area change).
+void clearSprites();
+
+// LINKFULL sprite-hotspot introspection (for the debug overlay). spriteInfo fills
+// the link's anim slot, its resolved node (findNodeByTag, or -1), and flags.
+int  spriteCount();
+bool spriteInfo(int i, int& animSlot, int& node, int& flags);
 
 // Low byte of p[4] for `node`, or -1 if `node` is out of range.
 int cursorId(int node);

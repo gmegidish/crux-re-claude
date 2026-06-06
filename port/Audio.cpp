@@ -14,6 +14,7 @@ struct Chan {
     std::vector<int16_t> buf;   // S16 mono samples
     size_t pos = 0;             // read cursor (advanced by the audio callback)
     float  gain = 1.0f;         // per-channel linear gain
+    bool   loop = false;        // when drained, wrap pos to 0 instead of stopping
 };
 
 SDL_AudioDeviceID g_dev = 0;
@@ -28,8 +29,10 @@ void mixCallback(void* /*ud*/, Uint8* stream, int len) {
     const int n = len / (int)sizeof(int16_t);
     for (int i = 0; i < n; ++i) {
         float sum = 0.0f;
-        for (auto& c : g_chan)
+        for (auto& c : g_chan) {
+            if (c.loop && !c.buf.empty() && c.pos >= c.buf.size()) c.pos = 0;  // wrap looping SFX
             if (c.pos < c.buf.size()) sum += c.gain * (float)c.buf[c.pos++];
+        }
         sum *= g_masterGain;
         if (sum >  32767.0f) sum =  32767.0f;
         if (sum < -32768.0f) sum = -32768.0f;
@@ -145,6 +148,14 @@ void clearChannel(int channel) {
     SDL_LockAudioDevice(g_dev);
     g_chan[channel].buf.clear();
     g_chan[channel].pos = 0;
+    g_chan[channel].loop = false;
+    SDL_UnlockAudioDevice(g_dev);
+}
+
+void setLoop(int channel, bool loop) {
+    if (channel < 0 || channel >= kChannels || !g_dev) { return; }
+    SDL_LockAudioDevice(g_dev);
+    g_chan[channel].loop = loop;
     SDL_UnlockAudioDevice(g_dev);
 }
 

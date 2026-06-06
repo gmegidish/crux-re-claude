@@ -2,6 +2,7 @@
 #include "ScmPlayer.h"
 #include "Audio.h"
 #include "Anim.h"
+#include "Slider.h"
 #include "Palette.h"
 #include "Text.h"
 #include "Theme.h"
@@ -178,7 +179,8 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
     for (int pc = 0; pc < count && !quit_; ++pc) {
         const ScriptInsn& in = prog->insns[pc];
         if (trace) {
-            Log::info("RP prog%d pc%-3d op=0x%-4x a0=%d a1=%d a2=%d", progId, pc, in.op, in.a0, in.a1, in.a2);
+            Log::info("RP %s prog%d pc=0x%x, op=0x%x, a0=0x%x, a1=0x%x, a2=0x%x",
+                      scene_->name(), progId, pc, in.op, in.a0, in.a1, in.a2);
         }
         switch (in.op) {
 
@@ -221,6 +223,19 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
         //    inverted polarity (hit-test = byte 0), this makes the matching nodes
         //    NON-clickable. --
         case 0x08:  Area::setEnabledByteByTag(in.a0, 1); break;
+
+        // -- LINKFULL (RunProg_Exec @0x00462560 case 0x169 flags=0 / case 0x2c3 flags=1):
+        //    register the current STANI anim slot (curAnimSlot_, set by 0x3f) as a dynamic
+        //    clickable area whose hit-rect is the anim's painted frame bbox, resolving to the
+        //    node whose tag == a0 (func 0x0040116d = Area_FindNodeByTag). Appends to
+        //    g_anAreaSpriteList with offX/offY = -1 (so the rect comes straight from the anim).
+        //    The engine also flags the anim slot 0x1000 (moving-area marker, used for redraw)
+        //    and fatally asserts a current STANI slot; the port doesn't need the marker and
+        //    guards instead of asserting. --
+        case 0x169:
+        case 0x2c3:
+            Area::linkFull(curAnimSlot_, in.a0, in.op == 0x169 ? 0 : 1);
+            break;
 
         // -- IF guards: skip the following block when the condition holds --
         case 0x09:  if (var(in.a0) <= in.a1) pc = skipBlock(*prog, pc, true); break;  // IF_VAR_LE
@@ -331,6 +346,44 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
             break;
         }
 
+        // -- PLAY_SOUND (RunProg_Exec @0x00462560 case 0x15): play soundName(a0) as a looping
+        //    room effect. Engine: Fx_PlayChar -> SndMem_ReadSound + Mixer_PlayChannel(3),
+        //    re-armed each time the channel drains (FX.cpp), then RunProg_TrackSound(3). Sound
+        //    resources are type-32 raw 8-bit-unsigned mono PCM @22050 with no header, which
+        //    Audio::queue consumes directly (fmt=0). We loop it on the spare SFX channel; it's
+        //    cleared on area change and by the stop ops (0x16f Fx_StopLoop / 0x132 stop-tracked).
+        //    The engine's subtitle-only / skip-mode guard isn't modeled (the port has audio). --
+        case 0x15: {
+            const std::string& key = scene_->soundName(in.a0);
+            if (!key.empty()) {
+                const ResEntry* e = nullptr;
+                for (const auto& en : arc_.entries()) {
+                    if (en.type == 32 && strcasecmp(en.name.c_str(), key.c_str()) == 0) { e = &en; break; }
+                }
+                if (e != nullptr) {
+                    std::vector<uint8_t> snd = arc_.read(*e);
+                    if (!snd.empty()) {
+                        Audio::clearChannel(Audio::SFX);
+                        Audio::queue(Audio::SFX, snd.data(), snd.size(), 0);  // 8-bit unsigned mono 22050
+                        Audio::setLoop(Audio::SFX, true);
+                    }
+                }
+                Log::info("PLAY_SOUND snd[%d]='%s' (looping ch%d, %s)", in.a0, key.c_str(),
+                          Audio::SFX, e ? "playing" : "no type-32 resource");
+            }
+            break;
+        }
+
+        // -- FX_STOP_LOOP (case 0x16f -> Fx_StopLoop) / STOP_TRACKED (case 0x132 ->
+        //    RunProg_StopAndClearTrackedSounds): silence the looping room SFX. The SFX channel
+        //    is the only tracked audio the port actually plays (voice/speech is subtitle-only),
+        //    so clearing it covers the tracked-stop. 0x132 also ends a blocking-anim sequence +
+        //    finalises the skip path, which the port doesn't model (cf. 0x131/0x134). --
+        case 0x16f:
+        case 0x132:
+            Audio::clearChannel(Audio::SFX);
+            break;
+
         // -- SCHED fade-to-black: smoothly ramp the active palette to black over 64
         //    steps (a1 = ms/step). A screen fade-out transition. --
         case 0x204:  fadeToBlack(in.a1); break;
@@ -422,6 +475,16 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
             break;
         }
 
+        // -- LOAD_ANIM (RunProg_Exec @0x00462560 case 0x1): add anim animName(a0) NON-looping,
+        //    not frozen — Anim_AddByNum(a0,0,0) + Anim_SetWalkTableBase(slot,a1). a1 is the
+        //    walk-table base (unused by our renderer, cf. 0x19/0x137); the skip-mode branch
+        //    (GI_SetDrawMode(0)+draw) isn't modeled. Non-looping sibling of 0x19. --
+        case 0x1: {
+            const std::string& nm = scene_->animName(in.a0);
+            if (!nm.empty()) { Anim::addByName(arc_, nm.c_str(), /*looping*/false, /*frozen*/false); }
+            break;
+        }
+
         // -- LOAD_ANIM_LOOPING: add anim animName(a0) looping (not frozen). a1 is the
         //    walk-table base (unused by our renderer). Sibling of 0x13ba. --
         case 0x19: {
@@ -494,6 +557,25 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
                 if (Anim::active(s)) { Anim::resetFreeze(s); }
             }
             break;
+
+        // -- WAIT_FRAME (RunProg_Exec @0x00462560 case 0x13b): resolve slot = animName(a0)
+        //    (or the current "this" slot), `Anim_SetStopFrame(slot, a1)`, then busy-wait —
+        //    `Adv_Tick` + `Timer_DispatchAsyncProg` each iteration — until the anim reaches
+        //    frame a1; a right-click during a blocking anim aborts into skip mode. Out-of-
+        //    range a1 is a debug no-op ("Frame %d out of range").
+        //    The port's VM runs a whole program to completion without yielding to the render
+        //    loop, so the real-time play-to-frame and the right-click abort can't be
+        //    reproduced (same limit that makes 0x1f/0x134 no-ops). We apply the observable
+        //    resting state the engine leaves once the stop frame is hit: advance the anim to
+        //    frame a1 and hold it there. setCurrentFrame clamps a1 to the frame range, and
+        //    freeze stops the render loop from advancing past it (0x13d/UNFREEZE resumes). --
+        case 0x13b: {
+            const std::string& nm = scene_->animName(in.a0);
+            int slot = (strcasecmp(nm.c_str(), "this") == 0) ? curAnimSlot_
+                                                             : Anim::findByName(nm.c_str());
+            if (slot >= 0) { Anim::setCurrentFrame(slot, in.a1); Anim::freeze(slot); }
+            break;
+        }
 
         // -- FREEZE_ANIM: freeze animName(a0) at frame a1 (SetCurrentFrame + stop). --
         case 0x13c: {
@@ -743,6 +825,59 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
             var(in.a0) = (curAnimSlot_ < 0) ? -1 : Anim::getCurrentFrame(curAnimSlot_);
             break;
 
+        // -- SLIDER ops (animated UI sliders; Slider.cpp ports ../src/SLIDER.cpp) --
+        //    Each maps 1:1 to a Slider:: call. var(a0) is the slider id (or, for
+        //    SET_VALUE, the value). The engine stores ids in g_anSpeechPlayed[a0]
+        //    (== var(a0)) and resolves -1 to the "current" slider.
+
+        // -- SLIDER_ADD (RunProg_Exec @0x00462560 case 0x19d): var(a0) =
+        //    Slider_Add(curAnimSlot_, a1). a1 = flags (bit0 = vertical). The engine
+        //    asserts a current STANI slot; the port guards curAnimSlot_ >= 0. --
+        case 0x19d:
+            if (curAnimSlot_ >= 0) {
+                var(in.a0) = Slider::add(curAnimSlot_, (unsigned int)in.a1);
+            } else {
+                Log::warn("RunProg: SLIDER_ADD with no current anim slot");
+                var(in.a0) = -1;
+            }
+            break;
+
+        // -- SLIDER_REMOVE (case 0x19e): Slider_Remove(var a0). --
+        case 0x19e:   Slider::remove(var(in.a0)); break;
+
+        // -- SLIDER_SET_CURRENT (case 0x19f): Slider_SetCurrent(var a0). --
+        case 0x19f:   Slider::setCurrent(var(in.a0)); break;
+
+        // -- SLIDER_SET_POSITION (case 0x1a0): Slider_SetPosition(var a0, a1, a2). --
+        case 0x1a0:   Slider::setPosition(var(in.a0), in.a1, in.a2); break;
+
+        // -- SLIDER_SET_PIXEL_RANGE (case 0x1a1): Slider_SetPixelRange(var a0, a1, a2). --
+        case 0x1a1:   Slider::setPixelRange(var(in.a0), in.a1, in.a2); break;
+
+        // -- SLIDER_SET_VALUE_RANGE (case 0x1a2): Slider_SetValueRange(var a0, a1, a2). --
+        case 0x1a2:   Slider::setValueRange(var(in.a0), in.a1, in.a2); break;
+
+        // -- SLIDER_TRACK_CLICKED (case 0x1a3): var(a0) = Slider_TrackClicked(-1).
+        //    Blocking in the engine (loops while the button is held); the port runs
+        //    a real per-frame loop via pumpFrame() when realtime, else returns the
+        //    real current value (see Slider::trackClicked). -1 = current slider. --
+        case 0x1a3:
+            var(in.a0) = Slider::trackClicked(-1, disp_, [this]() { return pumpFrame(); });
+            break;
+
+        // -- SLIDER_DRAG (case 0x1a4): var(a0) = Slider_Drag(-1). Same blocking/
+        //    headless model as 0x1a3. -1 = current slider. --
+        case 0x1a4:
+            var(in.a0) = Slider::drag(-1, disp_, [this]() { return pumpFrame(); });
+            break;
+
+        // -- SLIDER_SET_MAX_STEP (case 0x1a5): Slider_SetMaxStep(var a0, a1). --
+        case 0x1a5:   Slider::setMaxStep(var(in.a0), in.a1); break;
+
+        // -- SLIDER_SET_VALUE (case 0x1a6): Slider_SetValue(-1, var a0). -1 = current
+        //    slider; the value to set is var(a0). --
+        case 0x1a6:   Slider::setValue(-1, var(in.a0)); break;
+
         // -- subsystem ops we haven't built yet: faithful no-ops --
         case 0x49:    break;  // BREAK_IF_SKIP: tick 1 anim frame; our render loop drives frames
         case 0x1f:    break;  // WAIT_ANIM_END: blocks until an anim's last frame; no mid-script ticking
@@ -752,14 +887,45 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
                               // ported (no timers ever registered), so this finds nothing -> no-op
         case 0x17e:   break;  // Timer_AddWithReset(a1 frames, a0): schedule a repeating async-prog
                               // callback; the timer/async-prog dispatch isn't ported yet -> no-op
+        case 0x196:   break;  // Timer_AddAsync(a1, a0) (case 0x196 -> 0x0047e3a0): register a
+                              // per-frame async timer firing program a0; same unported timer/
+                              // async-prog dispatch as 0x17e/0x18f -> no-op
+        case 0x905:   break;  // FILES_LOAD_DIALOG (case 0x905): open the Win32 load-game file
+                              // dialog, and on a pick load the save + restart. The port has no
+                              // save/load subsystem (no file dialog, no save format) -> no-op
         case 0x41:    break;  // REMOVE_AREA_SPRITE: unregister a sprite-area hotspot; we don't port
                               // the op-0x40 sprite-area registry, so there's nothing to remove
-        case 0x19e:   break;  // Slider_Remove(var a0): clear a sound-channel slider; the slider/
-                              // sound-channel subsystem isn't ported, so nothing to remove -> no-op
         case 0x15a:   break;  // Anim_SetCompletionCallback(animName(a0), none): clears an anim's
                               // completion callback; the port has no anim callbacks -> no-op
-        case 0x19c:   break;  // Anim_FlushDraw: GI_SetDrawMode(0) + lock the DirectDraw surface; the
-                              // port renders to a flat framebuffer (no draw modes/locks) -> no-op
+        case 0x159:   break;  // Anim_SetCompletionCallback(slot animName(a0)/"this", iRam007c4998,
+                              // a1, 0xffffffff): arm a completion callback (run pending script id
+                              // iRam007c4998 with arg a1 when the anim finishes). Same subsystem as
+                              // 0x15a/0x3c/0x3d/0x3e — the port models no anim completion callbacks
+                              // (the VM runs each program straight to completion), so there is no
+                              // callback registry to arm -> faithful no-op.
+        case 0x185:   break;  // Anim_SetCompletionCallback(slot animName(a0)/"this", iRam007c4998,
+                              // a1, a2[ or frameCount+a2 if a2<-1]): same as 0x159 but fires the
+                              // callback at a specific frame (a2) rather than at the very end. Same
+                              // unported anim-completion-callback subsystem (cf. 0x159/0x15a) -> no-op.
+        case 0x3c:    break;  // SET_CALLBACK_ID (case 0x3c): iRam007c4998 = a0 — stash the pending
+                              // completion-callback script id. It is consumed only by 0x3d/0x3e
+                              // (Anim_SetCompletionCallback(slot, id, ...): run program `id` when the
+                              // anim finishes). The port models neither anim completion callbacks
+                              // (cf. 0x15a) nor 0x3d/0x3e, so there's nothing to feed -> no-op.
+        case 0x137:   break;  // SET_WALKTABLE (case 0x137): Anim_SetWalkTableBase(slot, a1) for
+                              // slot animName(a0)/"this" — binds the anim to a character walk-table
+                              // entry (per-char 0x58-byte record: depth/position). The port models
+                              // neither the per-char walk table nor walk-table-driven depth/position
+                              // (anim positions come from explicit ADD_ANIM/0x198 setPosition), so
+                              // there's nothing to bind -> no-op (cf. 0x19's ignored a1 base).
+        case 0x19b:   break;  // Anim_BeginNormalDraw (RunProg_Exec @0x00462560 case 0x19b ->
+                              // thunk 0x004014ec -> 0x0040de00): GI_SetDrawMode(0) +
+                              // GI_LockActiveSurf_v9(&DAT_005296f8). Twin of 0x19c — a DirectDraw
+                              // draw-mode select + active-surface lock. The port renders to a flat
+                              // framebuffer (no draw modes/locks), so faithful no-op (cf. 0x19a's
+                              // dropped Anim_EnableDraw).
+        case 0x19c:   break;  // Anim_FlushDraw (case 0x19c -> 0x0040df40): GI_SetDrawMode(0) +
+                              // GI_LockActiveSurf_v10. Same as 0x19b; flat framebuffer -> no-op
         case 0x12d:   break;  // SPEECH_WAIT: tick frames while speech plays; no speech yet
         case 0x12e:   break;  // SPEECH_END: clears tick-suppress / restores cursor; no speech yet
         case 0x1838:  break;  // GRAN_INIT_TAPE
@@ -770,6 +936,7 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
                               // It produces NO speech/subtitle. (vvk/prog44's variant-block of 12
                               // 0xff slots is likewise no-op padding; that program speaks nothing in
                               // the engine. Subtitles come only from 0xcd -> SndMem_StartSpeech.)
+        case 0x02:    break;  // empty `case 2: break;` in the engine (RunProg_Exec) -> no-op
         case 0x158:   break;  // engine no-op (paired with 0x1fd)
         case 0x850: case 0x855: case 0x856: case 0x857: case 0x858:
         case 0x84c:   break;  // text/speech timing ops

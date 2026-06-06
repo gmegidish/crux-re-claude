@@ -63,7 +63,12 @@ PumpResult Display::pump() {
             mouseY_ = ev.button.y;
             clickPending_ = true;
             clickButton_ = ev.button.button;
+            if (ev.button.button == SDL_BUTTON_LEFT) { leftHeld_ = true; }
             r = PumpResult::Skip;
+        } else if (ev.type == SDL_MOUSEBUTTONUP) {
+            mouseX_ = ev.button.x;
+            mouseY_ = ev.button.y;
+            if (ev.button.button == SDL_BUTTON_LEFT) { leftHeld_ = false; }
         } else if (ev.type == SDL_KEYDOWN) {
             r = PumpResult::Skip;                               // key → skip cutscene
         }

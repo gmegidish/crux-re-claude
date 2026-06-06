@@ -30,6 +30,9 @@ public:
     // Load the type-4 .SCN resource `name`. Returns false (and logs) on failure.
     bool load(ResArchive& arc, const char* name);
 
+    // Resource name this scene was loaded from (e.g. "VVQ"); "" if not loaded.
+    const char* name() const { return name_.c_str(); }
+
     int  cacheSlot(int i) const { return (i >= 0 && i < 15) ? cacheSlots_[i] : -1; }
     const ScriptProgram* program(int id) const {
         return (id >= 0 && id < (int)programs_.size()) ? &programs_[id] : nullptr;
@@ -55,6 +58,7 @@ private:
                              animNames_, scaScmNames_, themeNames_, soundNames_;
     int cacheSlots_[15];
     std::vector<ScriptProgram> programs_;
+    std::string name_;
     std::vector<uint8_t> areaNodes_;     // raw 0xB0-byte area-node records
     int                  areaNodeCount_ = 0;
 };

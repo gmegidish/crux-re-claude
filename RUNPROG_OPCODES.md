@@ -34,7 +34,10 @@ opcode count is **~390**; the address space is sparse with large reserved gaps
 
 | Opcode | Name | Action |
 |--------|------|--------|
-| 0x000–0x004 | INVCHAIN_0..4 | Jump to inventory-chain script slot N (load new program, restart interpreter); 0x004 errors if id>4 or target==-1 |
+| 0x001 | LOAD_ANIM | `Anim_AddByNum(animName(a0),loop=0,0)` + `Anim_SetWalkTableBase(slot,a1)` — load anim NON-looping (non-looping sibling of 0x19). Skip-mode branch: `GI_SetDrawMode(0)`+draw. ⚠ NOT "INVCHAIN" — the old table here was wrong (verified vs `RunProg_Exec` case 1) |
+| 0x002 | NOP | empty `case 2: break;` in the engine |
+| 0x003 | NEXT_AREA (INVCHAIN_3) | `DAT_00712838 = 1; DAT_0070ded0 = areaBank[a0]` — queue a transition; target = the selected area-name bank `[a0]`. `_DAT_0070b5c4` is set by `RunProg_SelectAreaContext`: in the default/primary context (`DAT_0070e130==0`) it = the exit-name table (`0x0070d560`), so this is `exitName(a0)`. The port's `case 0x03 → nextArea_=exitName(a0)` is correct for the primary context (the secondary bank isn't modeled). |
+| 0x004 | SET_VAR | `var[arg0] = arg1` |
 | 0x005 | INC_VAR | `var[arg0]++` |
 | 0x006 | DEC_VAR | `var[arg0]--` |
 | 0x007 | AREA_NODE_DISABLE | Clear enabled-flag on all area nodes with tag==arg0; refresh slots |
@@ -217,6 +220,8 @@ opcode count is **~390**; the address space is sparse with large reserved gaps
 | 0x197 | ANIM_SET_FRAMESTEP_0 | Pause frame advancement |
 | 0x198 | ANIM_SET_POSITION | `Anim_SetPosition(slot, x, y)` |
 | 0x19a | FILES_LOAD_PAL | `Files_LoadPal` + `Anim_EnableDraw` |
+| 0x19b | ANIM_BEGIN_DRAW | `Anim_BeginNormalDraw` (0x0040de00): `GI_SetDrawMode(0)` + `GI_LockActiveSurf_v9` — DirectDraw draw-mode + surface lock; no-op on a flat framebuffer |
+| 0x19c | ANIM_FLUSH_DRAW | `Anim_FlushDraw` (0x0040df40): `GI_SetDrawMode(0)` + `GI_LockActiveSurf_v10` — twin of 0x19b; no-op on a flat framebuffer |
 | 0x19d | SLIDER_ADD | Add slider value → `var[reg]` |
 | 0x1a7 | WAIT_FOR_UNK | Busy-wait until condition clears |
 | 0x1a8 | SET_AMBIENT_MUSIC | Timed ambient music + clear music name |

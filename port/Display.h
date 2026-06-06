@@ -40,6 +40,11 @@ public:
     // button: SDL_BUTTON_LEFT/RIGHT/MIDDLE. Returns false if no click pending.
     bool takeClick(int& x, int& y, int& button);
 
+    // True while the left mouse button is currently held down (tracked from
+    // SDL_MOUSEBUTTONDOWN/UP in pump()). Used by the SLIDER drag/track loops,
+    // which run as long as the button is held. Always false when headless.
+    bool leftButtonHeld() const { return leftHeld_; }
+
     // Push a framebuffer to the screen.
     void present(const Framebuffer& fb);
 
@@ -52,5 +57,6 @@ private:
     int           mouseX_ = 0, mouseY_ = 0;
     bool          clickPending_ = false;
     int           clickButton_ = 0;
+    bool          leftHeld_ = false;   // left mouse button currently down
     std::vector<uint32_t> rgba_;
 };

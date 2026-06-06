@@ -17,6 +17,7 @@
 #include "Anim.h"
 #include "Cursor.h"
 #include "Area.h"
+#include "Slider.h"
 #include "Palette.h"
 #include "Theme.h"
 #include "Sentence.h"
@@ -254,6 +255,75 @@ static void dumpAreaPng(const Framebuffer& bg, const char* path) {
     }
 }
 
+// --- Live on-screen area overlay (AREA_OVERLAY=1): the same node boxes dumpAreaPng
+// writes to a PNG, but painted into the 8-bit framebuffer every frame so they're always
+// visible while playing. Outlines each node's bbox (green = hit-testable, red = filtered)
+// with its index, using the nearest palette index to those colours (so it works on the
+// indexed surface without disturbing the scene palette). ---
+static int nearestPaletteIndex(const Framebuffer& fb, int r, int g, int b) {
+    const uint8_t* pal = fb.palette();
+    int best = 0;
+    long bestD = 0x7fffffffL;
+    for (int i = 0; i < 256; ++i) {
+        int dr = pal[i*3+0] - r, dg = pal[i*3+1] - g, db = pal[i*3+2] - b;
+        long d = (long)dr*dr + (long)dg*dg + (long)db*db;
+        if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
+}
+
+static void putIdx(Framebuffer& fb, int x, int y, uint8_t idx) {
+    if (x < 0 || x >= Framebuffer::W || y < 0 || y >= Framebuffer::H) { return; }
+    fb.pixels()[(size_t)y * Framebuffer::W + x] = idx;
+}
+
+static void drawNumberIdx(Framebuffer& fb, int x, int y, int value, uint8_t idx) {
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "%d", value);
+    for (const char* c = buf; *c; ++c) {
+        if (*c < '0' || *c > '9') { continue; }
+        const uint8_t* glyph = kDigit5x7[*c - '0'];
+        for (int row = 0; row < 7; ++row) {
+            for (int col = 0; col < 5; ++col) {
+                if (glyph[row] & (0x10 >> col)) { putIdx(fb, x + col, y + row, idx); }
+            }
+        }
+        x += 6;
+    }
+}
+
+static void drawAreaOverlay(Framebuffer& fb) {
+    uint8_t green  = (uint8_t)nearestPaletteIndex(fb, 0, 255, 0);
+    uint8_t red    = (uint8_t)nearestPaletteIndex(fb, 255, 40, 40);
+    uint8_t yellow = (uint8_t)nearestPaletteIndex(fb, 255, 255, 0);
+    for (int n = 0; n < Area::count(); ++n) {
+        Area::NodeInfo ni;
+        if (!Area::nodeInfo(n, ni)) { continue; }
+        // Skip degenerate / off-screen rects (e.g. anim-driven nodes with bbox -1,-1,-1,-1).
+        if (ni.x2 < ni.x1 || ni.y2 < ni.y1 || ni.x2 < 0 || ni.y2 < 0) { continue; }
+        uint8_t idx = ni.hittable ? green : red;
+        for (int x = ni.x1; x <= ni.x2; ++x) { putIdx(fb, x, ni.y1, idx); putIdx(fb, x, ni.y2, idx); }
+        for (int y = ni.y1; y <= ni.y2; ++y) { putIdx(fb, ni.x1, y, idx); putIdx(fb, ni.x2, y, idx); }
+        drawNumberIdx(fb, ni.x1 + 2, ni.y1 + 2, n, yellow);
+    }
+
+    // Dynamic LINKFULL hotspots: the anim-driven clickable objects whose static node
+    // bbox is (-1,-1). Their real hit-rect is the live anim's painted frame bbox
+    // (Anim::frameBounds), exactly what Area_FindAt's sprite path tests. Drawn in cyan
+    // and labelled with their resolved node, so a room's actual objects are visible.
+    uint8_t cyan = (uint8_t)nearestPaletteIndex(fb, 0, 255, 255);
+    int animSlot, node, flags;
+    for (int i = 0; i < Area::spriteCount(); ++i) {
+        if (!Area::spriteInfo(i, animSlot, node, flags)) { continue; }
+        int bx, by, bw, bh;
+        if (!Anim::frameBounds(animSlot, bx, by, bw, bh)) { continue; }
+        int x2 = bx + bw, y2 = by + bh;
+        for (int x = bx; x <= x2; ++x) { putIdx(fb, x, by, cyan); putIdx(fb, x, y2, cyan); }
+        for (int y = by; y <= y2; ++y) { putIdx(fb, bx, y, cyan); putIdx(fb, x2, y, cyan); }
+        if (node >= 0) { drawNumberIdx(fb, bx + 2, by + 2, node, cyan); }
+    }
+}
+
 // Interactive scene loop: compose the z-ordered anims each frame and present,
 // until the user quits (window close) or a verb script requests an area change.
 // Returns the next area name, or "" to quit. Headless renders one frame and ends.
@@ -286,6 +356,8 @@ static std::string runScene(Scene& scene, RunProg& vm, Display& disp,
     // Optional area-node map: AREA_PNG=<path> dumps a 640x480 PNG of every node's
     // bbox over the (dimmed) backdrop, plus a per-node field log.
     if (const char* ap = std::getenv("AREA_PNG")) { dumpAreaPng(fb, ap); }
+    // Live area overlay: paint the node boxes into every frame (always visible).
+    const bool areaOverlay = std::getenv("AREA_OVERLAY") != nullptr;
 
     int animTick = 0;
     for (;;) {
@@ -315,6 +387,18 @@ static std::string runScene(Scene& scene, RunProg& vm, Display& disp,
 
         std::memcpy(fb.pixels(), bgPlate.data(), bgPlate.size());   // restore backdrop
         Anim::drawAll(fb);                                          // flowers (hover-aware)
+        if (areaOverlay) {
+            drawAreaOverlay(fb);                                    // static nodes + LINKFULL sprites
+            // Menu flowers are anim-driven node-0..5 hotspots resolved via buildMenuButtons
+            // (the port's own hack, separate from Area's static bbox / sprite list), so the
+            // real clickable things wouldn't show otherwise. Outline them in magenta.
+            uint8_t magenta = (uint8_t)nearestPaletteIndex(fb, 255, 0, 255);
+            for (const MenuButton& b : buttons) {
+                for (int x = b.x; x <= b.x + b.w; ++x) { putIdx(fb, x, b.y, magenta); putIdx(fb, x, b.y + b.h, magenta); }
+                for (int y = b.y; y <= b.y + b.h; ++y) { putIdx(fb, b.x, y, magenta); putIdx(fb, b.x + b.w, y, magenta); }
+                if (b.node >= 0) { drawNumberIdx(fb, b.x + 2, b.y + 2, b.node, magenta); }
+            }
+        }
 
         // Cursor reflects the hovered region's cursor id: a hovered menu flower
         // (its area-node), else the topmost .SCN area-node under the mouse, else
@@ -513,6 +597,9 @@ int main(int argc, char** argv) {
         if (!scene.load(arc, area.c_str())) break;
 
         Anim::reset();              // fresh anim pool per area
+        Area::clearSprites();       // drop the previous area's LINKFULL hotspots (op 0x169)
+        Slider::clearAll();         // drop the previous area's sliders (op 0x19d)
+        Audio::clearChannel(Audio::SFX);   // stop the previous room's looping SFX (op 0x15)
         vm.clearTransition();
 
         // Run the area's lifecycle scripts (sets up anims, plays intros, etc.),
