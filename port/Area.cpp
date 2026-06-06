@@ -102,6 +102,16 @@ void Area::clearSprites() {
     g_sprites.clear();
 }
 
+bool Area::removeSprite(int tag) {
+    for (size_t i = 0; i < g_sprites.size(); ++i) {
+        if (g_sprites[i].tag == tag) {
+            g_sprites.erase(g_sprites.begin() + (long)i);
+            return true;
+        }
+    }
+    return false;
+}
+
 int Area::spriteCount() {
     return (int)g_sprites.size();
 }

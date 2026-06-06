@@ -563,17 +563,23 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
         //    `Adv_Tick` + `Timer_DispatchAsyncProg` each iteration — until the anim reaches
         //    frame a1; a right-click during a blocking anim aborts into skip mode. Out-of-
         //    range a1 is a debug no-op ("Frame %d out of range").
-        //    The port's VM runs a whole program to completion without yielding to the render
-        //    loop, so the real-time play-to-frame and the right-click abort can't be
-        //    reproduced (same limit that makes 0x1f/0x134 no-ops). We apply the observable
-        //    resting state the engine leaves once the stop frame is hit: advance the anim to
-        //    frame a1 and hold it there. setCurrentFrame clamps a1 to the frame range, and
-        //    freeze stops the render loop from advancing past it (0x13d/UNFREEZE resumes). --
+        //    Ported for real with the per-slot stop frame (cf. 0x1f WAIT_ANIM_END): set the
+        //    stop frame to a1 and, when realtime, pump frames until the anim reaches it (or
+        //    quit/area-change). Headless settles to frame a1 immediately so it can't hang. --
         case 0x13b: {
             const std::string& nm = scene_->animName(in.a0);
             int slot = (strcasecmp(nm.c_str(), "this") == 0) ? curAnimSlot_
                                                              : Anim::findByName(nm.c_str());
-            if (slot >= 0) { Anim::setCurrentFrame(slot, in.a1); Anim::freeze(slot); }
+            if (slot >= 0) {
+                Anim::setStopFrame(slot, in.a1);
+                if (disp_.isRealtime()) {
+                    while (!Anim::atStopFrame(slot)) {
+                        if (!pumpFrame()) { break; }
+                    }
+                } else {
+                    Anim::setCurrentFrame(slot, in.a1);
+                }
+            }
             break;
         }
 
@@ -582,6 +588,21 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
             const std::string& nm = scene_->animName(in.a0);
             int slot = Anim::findByName(nm.c_str());
             if (slot >= 0) { Anim::setCurrentFrame(slot, in.a1); Anim::freeze(slot); }
+            break;
+        }
+
+        // -- FREEZE_ANIM_LAST (RunProg_Exec @0x00462560 case 0x14d): freeze animName(a0)
+        //    (or the current "this" slot) at its LAST frame — Anim_SetFrameStep(slot,0) +
+        //    Anim_SetCurrentFrame(slot, frameCount-1). Sibling of 0x13c, but pinned to the
+        //    final frame instead of a1. --
+        case 0x14d: {
+            const std::string& nm = scene_->animName(in.a0);
+            int slot = (strcasecmp(nm.c_str(), "this") == 0) ? curAnimSlot_
+                                                             : Anim::findByName(nm.c_str());
+            if (slot >= 0) {
+                Anim::setCurrentFrame(slot, Anim::frameCount(slot) - 1);
+                Anim::freeze(slot);
+            }
             break;
         }
 
@@ -802,18 +823,76 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
             break;
 
         // -- BEGIN_ANIM_GROUP (RunProg_Exec @0x00462560, case 0x6b): start defining an
-        //    animation group. The engine stores a1 (member count) into the "pending
-        //    group members" counter DAT_00574bec, then calls Anim_StartGroup(a1, a2)
-        //    (Advanim.cpp @0x00409260): it opens a new slot in g_anGroupSize[g_nGroupCount]
-        //    = max(a1,1) and g_anGroupTriggerPct[g_nGroupCount] = a2 (the trigger
-        //    percentage), and marks the group's active slot -1. The following anim-add
-        //    ops (e.g. 0x19/0x13ba) each call Anim_AddToGroup and decrement DAT_00574bec
-        //    until a1 members are registered. a0 is unused.
-        //    The group subsystem (Anim_StartGroup/Anim_AddToGroup + the sprite-trigger
-        //    tables read by Tushtush/RESCALE) isn't ported — our Anim has no group concept
-        //    and the corresponding anim-add ops don't register members — so there's
-        //    nothing to track here: faithful no-op, like the timer/slider/callback ops.
-        case 0x6b:    break;
+        //    animation group. The engine sets g_nGroupMemberTemp=0 then Anim_StartGroup(a1,a2)
+        //    (@0x00409260): g_anGroupSize[g_nGroupCount]=a1, g_anGroupTriggerPct[g_nGroupCount]=
+        //    (a2?:1), g_anGroupActiveSlot[g_nGroupCount]=-1. The next a1 anim-add ops (0x1/0x19/
+        //    0x13ba/...) each call Anim_AddToGroup(slot) (@0x00409460), tagging the slot's
+        //    g_anAnimSlotGroupId and clearing flag bit 0x8, until a1 members are in (then
+        //    g_nGroupCount++). Anim_BuildDrawOrder (@0x00407708) consumes the group: a group with
+        //    activeSlot==-1 rolls rand()%100 < triggerPct and, on success, picks members[rand%size]
+        //    as the active member; only the ACTIVE member is added to the draw list (and advanced).
+        //    Anim_HandleFrameTick releases the active member (activeSlot->-1) when its anim ends.
+        //    Ported as a real group model in Anim (startGroup + auto-join in addByName +
+        //    group-aware tick/drawAll). a0 is unused. --
+        case 0x6b:    Anim::startGroup(in.a1, in.a2); break;
+
+        // -- BREAK_IF_SKIP (RunProg_Exec @0x00462560, case 0x49): engine
+        //    `if (local_130 == 0) Adv_TickFramesNoAsync(1);` — advance ONE world frame
+        //    unless the cutscene is being skipped. The port's pumpFrame() is exactly that
+        //    per-frame pump (ticks anims, streams music, presents, pumps input). Guard like
+        //    the other pump users so headless never blocks on input. --
+        case 0x49:
+            if (disp_.isRealtime()) { pumpFrame(); }
+            else { Anim::tick(); }
+            break;
+
+        // -- WAIT_ANIM_END (RunProg_Exec @0x00462560, case 0x1f): resolve slot =
+        //    animName(a0) (or the current "this" slot); if not skipping, Anim_SetStopFrame(
+        //    slot, frameCount-1) then loop Adv_Tick()+Timer_DispatchAsyncProg() until
+        //    Anim_IsAtStopFrame(slot) (a right-click aborts into skip). The port sets the real
+        //    per-slot stop frame and, when realtime, pumps frames until the slot reaches its
+        //    last frame (or quit/area-change). Headless settles immediately (jump to last
+        //    frame, no loop) so it can never hang. --
+        case 0x1f: {
+            const std::string& nm = scene_->animName(in.a0);
+            int slot = (strcasecmp(nm.c_str(), "this") == 0) ? curAnimSlot_
+                                                             : Anim::findByName(nm.c_str());
+            if (slot >= 0) {
+                int last = Anim::frameCount(slot) - 1;
+                Anim::setStopFrame(slot, last);
+                if (disp_.isRealtime()) {
+                    while (!Anim::atStopFrame(slot)) {
+                        if (!pumpFrame()) { break; }   // quit / area-change / right-click skip
+                    }
+                } else {
+                    Anim::setCurrentFrame(slot, last);   // settle to the resting frame
+                }
+            }
+            break;
+        }
+
+        // -- REMOVE_AREA_SPRITE (RunProg_Exec @0x00462560, case 0x41): engine
+        //    node=Area_FindNodeByTag(a0); find the sprite whose areaId==node; Area_RemoveSpriteAt
+        //    (@0x00414990, compacts g_anAreaSpriteList). The port stores the tag on each LINKFULL
+        //    link, so Area::removeSprite(a0) drops the first link tagged a0 (same observable
+        //    effect: that sprite-area hotspot stops being hit-tested). --
+        case 0x41:    Area::removeSprite(in.a0); break;
+
+        // -- SET_WALKTABLE (RunProg_Exec @0x00462560, case 0x137): resolve slot =
+        //    animName(a0)/"this"; Anim_SetWalkTableBase(slot, a1) (@0x00406980) writes
+        //    g_nCharWalkTableBase[slot]. Despite the name, that value is the anim's DRAW-ORDER
+        //    Z key: Anim_CompareByZ (@0x0040796e) sorts Anim_BuildDrawOrder's list by it
+        //    (ascending, lower = behind). The port models that — drawAll() z-sorts by zBase —
+        //    so this is a REAL render-affecting state-set, not a no-op. (Two other readers,
+        //    Anim_FindTopAtXY/Area_FindAt, feed the character depth/hit subsystem the port
+        //    doesn't model; the rendering consumer is ported.) --
+        case 0x137: {
+            const std::string& nm = scene_->animName(in.a0);
+            int slot = (strcasecmp(nm.c_str(), "this") == 0) ? curAnimSlot_
+                                                             : Anim::findByName(nm.c_str());
+            if (slot >= 0) { Anim::setZBase(slot, in.a1); }
+            break;
+        }
 
         // -- ANIM_GET_CURRENT_FRAME (RunProg_Exec @0x00462560, case 0x156): store the
         //    current frame index of the "current" anim slot (DAT_007c4108 / curAnimSlot_,
@@ -879,8 +958,6 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
         case 0x1a6:   Slider::setValue(-1, var(in.a0)); break;
 
         // -- subsystem ops we haven't built yet: faithful no-ops --
-        case 0x49:    break;  // BREAK_IF_SKIP: tick 1 anim frame; our render loop drives frames
-        case 0x1f:    break;  // WAIT_ANIM_END: blocks until an anim's last frame; no mid-script ticking
         case 0x2c0:   break;  // g_nPalState=5 (fade-to-target): a request to the per-frame palette
                               // state machine (Anim_TickPalette), not ported — palettes realize directly
         case 0x18f:   break;  // Timer_Kill(a0): remove an async timer; the timer subsystem isn't
@@ -893,8 +970,6 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
         case 0x905:   break;  // FILES_LOAD_DIALOG (case 0x905): open the Win32 load-game file
                               // dialog, and on a pick load the save + restart. The port has no
                               // save/load subsystem (no file dialog, no save format) -> no-op
-        case 0x41:    break;  // REMOVE_AREA_SPRITE: unregister a sprite-area hotspot; we don't port
-                              // the op-0x40 sprite-area registry, so there's nothing to remove
         case 0x15a:   break;  // Anim_SetCompletionCallback(animName(a0), none): clears an anim's
                               // completion callback; the port has no anim callbacks -> no-op
         case 0x159:   break;  // Anim_SetCompletionCallback(slot animName(a0)/"this", iRam007c4998,
@@ -912,12 +987,6 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
                               // (Anim_SetCompletionCallback(slot, id, ...): run program `id` when the
                               // anim finishes). The port models neither anim completion callbacks
                               // (cf. 0x15a) nor 0x3d/0x3e, so there's nothing to feed -> no-op.
-        case 0x137:   break;  // SET_WALKTABLE (case 0x137): Anim_SetWalkTableBase(slot, a1) for
-                              // slot animName(a0)/"this" — binds the anim to a character walk-table
-                              // entry (per-char 0x58-byte record: depth/position). The port models
-                              // neither the per-char walk table nor walk-table-driven depth/position
-                              // (anim positions come from explicit ADD_ANIM/0x198 setPosition), so
-                              // there's nothing to bind -> no-op (cf. 0x19's ignored a1 base).
         case 0x19b:   break;  // Anim_BeginNormalDraw (RunProg_Exec @0x00462560 case 0x19b ->
                               // thunk 0x004014ec -> 0x0040de00): GI_SetDrawMode(0) +
                               // GI_LockActiveSurf_v9(&DAT_005296f8). Twin of 0x19c — a DirectDraw

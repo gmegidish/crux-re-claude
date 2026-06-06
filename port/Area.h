@@ -52,6 +52,12 @@ void linkFull(int animSlot, int tag, int flags);
 // Drop all LINKFULL links (call on area change).
 void clearSprites();
 
+// REMOVE_AREA_SPRITE (RunProg op 0x41): remove the sprite link registered for the node
+// tagged `tag`. Engine: node=Area_FindNodeByTag(a0); locate the sprite whose areaId==node;
+// Area_RemoveSpriteAt(idx) (compacts g_anAreaSpriteList). The port stores the tag on the
+// link, so we remove the first link whose tag==`tag`. Returns true if one was removed.
+bool removeSprite(int tag);
+
 // LINKFULL sprite-hotspot introspection (for the debug overlay). spriteInfo fills
 // the link's anim slot, its resolved node (findNodeByTag, or -1), and flags.
 int  spriteCount();

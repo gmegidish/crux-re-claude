@@ -32,6 +32,34 @@ int addByName(ResArchive& arc, const char* name, bool looping, bool frozen);
 
 int  findByName(const char* name);           // slot with this name, or -1
 void freeSlot(int slot);
+
+// --- per-slot STOP FRAME (engine Anim_SetStopFrame @0x004054b0 / g_anAnimSlotStopFrame) ---
+// Set the frame at which `slot` should halt auto-advance. tick() does NOT advance a
+// slot past its stop frame (it clamps curFrame to stopFrame and leaves the slot's
+// getCurrentFrame valid — i.e. NOT frozen). Pass -1 to clear (no stop frame).
+// Used by WAIT_ANIM_END (0x1f) and WAIT_FRAME (0x13b).
+void setStopFrame(int slot, int frame);
+// True once `slot` has reached (its curFrame >=) its stop frame. Mirrors the engine's
+// Anim_IsAtStopFrame loop terminator. False if no stop frame is set / slot inactive.
+bool atStopFrame(int slot);
+
+// --- per-slot Z / draw-order key (engine Anim_SetWalkTableBase @0x00406980 sets
+//     g_nCharWalkTableBase, which Anim_CompareByZ @0x0040796e uses to z-sort the draw
+//     order). Set by op 0x137 SET_WALKTABLE. drawAll() sorts by this (lower = behind). ---
+void setZBase(int slot, int base);
+
+// --- ANIM GROUPS (engine Anim_StartGroup @0x00409260 / Anim_AddToGroup @0x00409460,
+//     consumed by Anim_BuildDrawOrder @0x00407708) ---
+// A group is a set of mutually-exclusive member slots; only the group's ACTIVE member
+// is drawn/advanced. startGroup opens a group of `size` members with switch chance
+// `triggerPct` (% per tick) and no active member. The next `size` anim-add calls
+// (addByName) auto-join the open group. Each tick, a group with no active member rolls
+// rand()%100 < triggerPct; on success it picks a random member as active (engine RNG is
+// an LCG, std::rand() per op 0x1c precedent). When the active member's anim ends it is
+// released (active -> none).
+void startGroup(int size, int triggerPct);
+// True while an open group is still waiting for members (drives addByName auto-join).
+bool groupOpen();
 void setPosition(int slot, int x, int y);
 void setCurrentFrame(int slot, int frame);
 void freeze(int slot);
