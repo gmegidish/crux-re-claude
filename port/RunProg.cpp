@@ -171,10 +171,21 @@ void RunProg::dispatchAnimCallbacks() {
     dispatchingCb_ = false;
 }
 
+bool RunProg::animFrameDue() {
+    if (!disp_.isRealtime()) { return true; }            // headless: advance every call
+    const uint32_t kFrameMs = 1000 / 9;                  // ADVENT.INI [Flow] FPS=9
+    uint32_t now = SDL_GetTicks();
+    if (now - lastAnimMs_ >= kFrameMs) { lastAnimMs_ = now; return true; }
+    return false;
+}
+
 bool RunProg::pumpFrame() {
-    Anim::tick();
-    Timer::tick();                                        // count down script timers alongside anims
-    dispatchAnimCallbacks();
+    // Advance the world (anims/timers) at the engine's ~9fps, not every present frame.
+    if (animFrameDue()) {
+        Anim::tick();
+        Timer::tick();                                    // count down script timers alongside anims
+        dispatchAnimCallbacks();
+    }
     Theme::advance();
     // Restore the clean backdrop before compositing anims, else each frame of a walk/
     // blocking-op animation smears on top of the last (the "20 grannies" bug). Matches
@@ -224,8 +235,8 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
     for (int pc = 0; pc < count && !quit_; ++pc) {
         const ScriptInsn& in = prog->insns[pc];
         if (trace) {
-            Log::info("RP %s prog%d pc=0x%x, op=0x%x, a0=0x%x, a1=0x%x, a2=0x%x",
-                      scene_->name(), progId, pc, in.op, in.a0, in.a1, in.a2);
+            Log::info("RP %s prog%d pc=0x%x, op=0x%x %s, a0=0x%x, a1=0x%x, a2=0x%x",
+                      scene_->name(), progId, pc, in.op, rpOpName(in.op), in.a0, in.a1, in.a2);
         }
         switch (in.op) {
 

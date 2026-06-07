@@ -18,6 +18,9 @@
 #include <string>
 #include <vector>
 
+// Opcode -> human name (e.g. "SET_VAR"), for the RP_TRACE log; "?" if unknown. (OpNames.cpp)
+const char* rpOpName(int op);
+
 class RunProg {
 public:
     RunProg(ResArchive& arc, Display& disp, Framebuffer& fb)
@@ -35,10 +38,15 @@ public:
     void setBackground(const uint8_t* px, size_t n) { bg_.assign(px, px + n); }
     void clearBackground() { bg_.clear(); }   // drop the backdrop (on area change)
 
+    // True ~[Flow] FPS (9) times/sec in realtime so anims advance at the engine's rate
+    // (the render loop still presents at ~30fps); always true headless (deterministic).
+    bool animFrameDue();
+
 private:
     ResArchive&  arc_;
     Display&     disp_;
     Framebuffer& fb_;
+    uint32_t     lastAnimMs_ = 0;    // last world-advance time for animFrameDue() pacing
     const Scene* scene_ = nullptr;   // current program's scene (for name tables / skip)
 
     // g_anSpeechPlayed — variable/register file (persists across areas). Heap-backed
@@ -66,6 +74,11 @@ private:
     int& var(int i);
 
 public:
+    // Read-only peek at the script variable file (g_anSpeechPlayed). Used by the menu loop
+    // to read the game's own "in options sub-screen" flag (var 0x28: prog26 sets 1, prog59
+    // clears it) so the flower hotspots are suppressed while options is up.
+    int varValue(int i) { return var(i); }
+
     // Run any anim completion callbacks that fired this frame (ops 0x3c/0x159/0x167/0x185).
     // Called after each Anim::tick() (render loop + pumpFrame). Re-entrancy-guarded.
     void dispatchAnimCallbacks();

@@ -295,16 +295,17 @@ static void drawNumberIdx(Framebuffer& fb, int x, int y, int value, uint8_t idx)
 
 static void drawAreaOverlay(Framebuffer& fb) {
     uint8_t green  = (uint8_t)nearestPaletteIndex(fb, 0, 255, 0);
-    uint8_t red    = (uint8_t)nearestPaletteIndex(fb, 255, 40, 40);
     uint8_t yellow = (uint8_t)nearestPaletteIndex(fb, 255, 255, 0);
     for (int n = 0; n < Area::count(); ++n) {
         Area::NodeInfo ni;
         if (!Area::nodeInfo(n, ni)) { continue; }
+        // Only show currently hit-testable nodes (type != 2 && enabled); filtered/disabled
+        // ones are just noise on screen.
+        if (!ni.hittable) { continue; }
         // Skip degenerate / off-screen rects (e.g. anim-driven nodes with bbox -1,-1,-1,-1).
         if (ni.x2 < ni.x1 || ni.y2 < ni.y1 || ni.x2 < 0 || ni.y2 < 0) { continue; }
-        uint8_t idx = ni.hittable ? green : red;
-        for (int x = ni.x1; x <= ni.x2; ++x) { putIdx(fb, x, ni.y1, idx); putIdx(fb, x, ni.y2, idx); }
-        for (int y = ni.y1; y <= ni.y2; ++y) { putIdx(fb, ni.x1, y, idx); putIdx(fb, ni.x2, y, idx); }
+        for (int x = ni.x1; x <= ni.x2; ++x) { putIdx(fb, x, ni.y1, green); putIdx(fb, x, ni.y2, green); }
+        for (int y = ni.y1; y <= ni.y2; ++y) { putIdx(fb, ni.x1, y, green); putIdx(fb, ni.x2, y, green); }
         drawNumberIdx(fb, ni.x1 + 2, ni.y1 + 2, n, yellow);
     }
 
@@ -325,14 +326,17 @@ static void drawAreaOverlay(Framebuffer& fb) {
     }
 }
 
-// Interactive scene loop: compose the z-ordered anims each frame and present,
-// until the user quits (window close) or a verb script requests an area change.
-// Returns the next area name, or "" to quit. Headless renders one frame and ends.
-static std::string runScene(Scene& scene, RunProg& vm, Display& disp,
-                            Framebuffer& fb, ResArchive& arc, const std::string& areaName) {
-    // The area palette and backdrop are named after the area (e.g. "MENU"): a
-    // type-3 palette + a type-6 full-screen sprite, with the GENERAL UI palette's
-    // non-black entries overlaid. The intro SCMs' frames/palette are transient.
+// Load an area's visuals BEFORE its lifecycle scripts run (mirrors Adv_RunScene): the
+// type-3 area palette + GENERAL UI overlay, the area-node table, the context cursors, and
+// the type-6 backdrop. Returns the clean backdrop plate (no anims) and hands it to the VM
+// so pumpFrame() restores it during blocking lifecycle ops (e.g. an intro anim's 0x1f
+// WAIT_ANIM_END). Doing this here — not inside runScene, which used to run AFTER the
+// lifecycle — is what makes a scene's intro play on its OWN palette/background instead of
+// the previous area's (vvi2's intro was rendering on the menu's backdrop + palette).
+static std::vector<uint8_t> loadAreaVisuals(Scene& scene, RunProg& vm, Framebuffer& fb,
+                                            ResArchive& arc, const std::string& areaName) {
+    // The area palette and backdrop are named after the area (e.g. "MENU"): a type-3
+    // palette + a type-6 full-screen sprite, with GENERAL's non-black entries overlaid.
     Palette::load(arc, fb, areaName.c_str(), /*nonBlackOnly*/false);   // area palette
     Palette::load(arc, fb, "GENERAL", /*nonBlackOnly*/true);           // UI overlay
     Area::load(scene.areaNodes(), scene.areaNodeCount());
@@ -345,11 +349,6 @@ static std::string runScene(Scene& scene, RunProg& vm, Display& disp,
     Cursor::loadMode(arc, 3, "CURSINV");                 // inventory
     Cursor::loadMode(arc, 9, "CURSHOUR");                // wait / hourglass
 
-    std::vector<MenuButton> buttons = buildMenuButtons(scene);
-
-    // Background plate = palette + backdrop, WITHOUT the flowers. The flowers are
-    // re-drawn each frame so hovering can swap a flower's normal anim for its
-    // glowing highlight.
     fb.clear(0);
     Anim::blitResourceFrame0(arc, fb, areaName.c_str(), 6, 0, 0);      // area backdrop
     std::vector<uint8_t> bgPlate(fb.pixels(), fb.pixels() + (size_t)fb.width() * fb.height());
@@ -357,19 +356,33 @@ static std::string runScene(Scene& scene, RunProg& vm, Display& disp,
     // drive walk animations) restores a clean background each frame instead of smearing
     // every frame on top of the last (the "20 grannies" bug).
     vm.setBackground(bgPlate.data(), bgPlate.size());
+    return bgPlate;
+}
 
-    // Optional area-node map: AREA_PNG=<path> dumps a 640x480 PNG of every node's
-    // bbox over the (dimmed) backdrop, plus a per-node field log.
-    if (const char* ap = std::getenv("AREA_PNG")) { dumpAreaPng(fb, ap); }
+// Interactive scene loop: compose the z-ordered anims each frame and present, until the
+// user quits (window close) or a verb script requests an area change. Visuals (palette/
+// backdrop/area nodes) are already loaded by loadAreaVisuals; `bgPlate` is the clean
+// backdrop plate WITHOUT anims, re-laid each frame. Returns the next area name, or "" to
+// quit. Headless renders one frame and ends.
+static std::string runScene(Scene& scene, RunProg& vm, Display& disp, Framebuffer& fb,
+                            const std::vector<uint8_t>& bgPlate) {
+    std::vector<MenuButton> buttons = buildMenuButtons(scene);
+
+    // Optional area-node map: AREA_PNG=<path> dumps a 640x480 PNG of every node's bbox over
+    // the (dimmed) backdrop. The lifecycle may have drawn anims into fb, so restore the
+    // clean plate first.
+    if (const char* ap = std::getenv("AREA_PNG")) {
+        std::memcpy(fb.pixels(), bgPlate.data(), bgPlate.size());
+        dumpAreaPng(fb, ap);
+    }
     // Live area overlay: paint the node boxes into every frame (always visible).
     const bool areaOverlay = std::getenv("AREA_OVERLAY") != nullptr;
 
-    int animTick = 0;
     for (;;) {
         Theme::advance();                     // keep room music streaming
-        // Advance animations at ~15 fps (every other ~30 fps render frame), then run any
-        // anim completion callbacks that fired (ops 0x159/0x167/0x185 -> their script).
-        if (++animTick % 2 == 0) { Anim::tick(); Timer::tick(); vm.dispatchAnimCallbacks(); }
+        // Advance anims/timers at the engine's ~9fps ([Flow] FPS), not per present frame,
+        // then run any anim completion callbacks that fired (ops 0x159/0x167/0x185).
+        if (vm.animFrameDue()) { Anim::tick(); Timer::tick(); vm.dispatchAnimCallbacks(); }
         if (vm.quit()) { return ""; }
         if (!vm.nextArea().empty()) { return vm.nextArea(); }
         int mx = disp.mouseX(), my = disp.mouseY();
@@ -386,11 +399,21 @@ static std::string runScene(Scene& scene, RunProg& vm, Display& disp,
             }
         }
 
-        // Swap normal<->highlight for the hovered flower.
-        int hover = hitMenuButton(buttons, mx, my);
-        for (int i = 0; i < (int)buttons.size(); ++i) {
-            Anim::setVisible(buttons[i].normalSlot,    i != hover);
-            Anim::setVisible(buttons[i].highlightSlot, i == hover);
+        // The flowers are the menu's clickable hotspots, but they belong to the menu's
+        // top-level screen only. When the options sub-screen is up (the game's own flag
+        // var 0x28 == 1, set by prog26 / cleared by prog59) the menu's area nodes are no
+        // longer the active set — the engine swaps to the OPTIONS context — so we stop
+        // puppeteering and hit-testing the flowers entirely. Clicks then fall through to
+        // Area::hitTest, which sees the option-widget nodes prog26 enabled via op 0x7.
+        const bool inMenu = vm.varValue(0x28) == 0;
+        // Swap normal<->highlight for the hovered flower (menu screen only).
+        int hover = -1;
+        if (inMenu) {
+            hover = hitMenuButton(buttons, mx, my);
+            for (int i = 0; i < (int)buttons.size(); ++i) {
+                Anim::setVisible(buttons[i].normalSlot,    i != hover);
+                Anim::setVisible(buttons[i].highlightSlot, i == hover);
+            }
         }
 
         std::memcpy(fb.pixels(), bgPlate.data(), bgPlate.size());   // restore backdrop
@@ -445,7 +468,7 @@ static std::string runScene(Scene& scene, RunProg& vm, Display& disp,
             // A flower → its area-node verb-0 (click) handler; otherwise fall back
             // to the bottom-strip nodes' AABB hit-test.
             int node, verb = 0;
-            int hb = hitMenuButton(buttons, cx, cy);
+            int hb = inMenu ? hitMenuButton(buttons, cx, cy) : -1;
             if (hb >= 0) {
                 node = buttons[hb].node;
                 Log::info("menu click -> flower %d (%s) node %d",
@@ -613,6 +636,10 @@ int main(int argc, char** argv) {
         Audio::clearChannel(Audio::SFX);   // stop the previous room's looping SFX (op 0x15)
         vm.clearTransition();
 
+        // Load this area's palette/backdrop/area-nodes BEFORE its lifecycle runs, so an
+        // intro anim plays on the correct background + palette (not the previous area's).
+        std::vector<uint8_t> bgPlate = loadAreaVisuals(scene, vm, fb, arc, area);
+
         // Run the area's lifecycle scripts (sets up anims, plays intros, etc.),
         // stopping early if one requests an area change or the user quit.
         for (int slotIdx : kLifecycleSlots) {
@@ -625,7 +652,7 @@ int main(int argc, char** argv) {
         std::string next = vm.nextArea();
         if (next.empty()) {
             // No transition requested → this area is interactive (e.g. the menu).
-            next = runScene(scene, vm, disp, fb, arc, area);
+            next = runScene(scene, vm, disp, fb, bgPlate);
         }
         if (next.empty()) break;    // quit
         Log::info("area transition: %s -> %s", area.c_str(), next.c_str());
