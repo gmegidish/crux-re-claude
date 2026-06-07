@@ -549,6 +549,14 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
         case 0x71: {
             const std::string& nm = scene_->scaScm(in.a0);
             if (!nm.empty()) playlist_.insert(playlist_.begin(), nm);
+            // A fullscreen movie installs its own per-frame palette; when it returns the
+            // engine's displayed palette is back to what it was before (the script then
+            // restores from the snapshot via 0x130). Mirror that by saving the active
+            // palette here and restoring it after playback, so the post-movie screen (and
+            // any 0x12f snapshot taken afterwards) keeps the area palette instead of the
+            // movie's last frame. Without this, credits/logos leave a corrupt palette.
+            uint8_t savedPal[768];
+            std::memcpy(savedPal, fb_.palette(), sizeof savedPal);
             // 0x78/0x71 prepend (Player_ScmAddChar inserts at slot 0). Player_ScmPlayList
             // pops via Player_GetNextScmName from the TOP index downward, which undoes the
             // prepend and replays in original script/add order. So iterate back-to-front.
@@ -556,6 +564,7 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
                 if (!playScmByName(arc_, disp_, fb_, playlist_[i].c_str())) { quit_ = true; break; }
             }
             playlist_.clear();
+            fb_.setPaletteRGB(savedPal);
             break;
         }
 
