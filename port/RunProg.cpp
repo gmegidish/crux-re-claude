@@ -19,6 +19,16 @@
 #include <cstring>
 #include <cmath>
 
+// The script's "current anim" sentinel: a name-table entry equal to this means "the
+// anim slot most recently added/selected" (curAnimSlot_), not a named lookup. The
+// engine stores it as "_THIS" in the .SCN name tables (Ghidra symbol s__this_), matched
+// case-insensitively. (An earlier port compared against "this" — without the leading
+// underscore — so EVERY "this" resolution silently missed: STANI/freeze/etc. no-op'd
+// and just-loaded anims looped forever.)
+static bool isThisSlot(const char* nm) {
+    return strcasecmp(nm, "_THIS") == 0 || strcasecmp(nm, "this") == 0;
+}
+
 // Opcodes that open an IF-block needing a matching ENDIF. Used to balance nested
 // blocks during a skip-scan. Mirrors the engine's is-opener predicate; expand as
 // the game surfaces more IF-family opcodes.
@@ -142,15 +152,21 @@ static const int kHeadlessRestartCap = 1000;
 // guard stops a callback's own pumpFrame() from re-draining (the outer loop continues).
 void RunProg::dispatchAnimCallbacks() {
     if (dispatchingCb_ || scene_ == nullptr) { return; }
+    // GATED OFF by default. Auto-running anim completion-callback / timer programs makes
+    // anims that should play once re-trigger themselves (endless loop) and runs palette
+    // sub-scripts that corrupt the room palette — the engine handles these with state the
+    // port doesn't model yet. Drain the queues so they don't grow, but only RUN the
+    // programs with RP_FIRE_CALLBACKS=1, for when that state is faithful.
+    static const bool fire = std::getenv("RP_FIRE_CALLBACKS") != nullptr;
     dispatchingCb_ = true;
     int prog;
     while ((prog = Anim::takeFiredCallback()) >= 0) {
-        exec(*scene_, prog, 0);
-        if (quit_ || !nextArea_.empty()) { break; }
+        if (fire) { exec(*scene_, prog, 0); }
+        if (fire && (quit_ || !nextArea_.empty())) { break; }
     }
     while ((prog = Timer::takeFired()) >= 0) {            // elapsed script timers (0x178/0x196/0x17e)
-        exec(*scene_, prog, 0);
-        if (quit_ || !nextArea_.empty()) { break; }
+        if (fire) { exec(*scene_, prog, 0); }
+        if (fire && (quit_ || !nextArea_.empty())) { break; }
     }
     dispatchingCb_ = false;
 }
@@ -536,7 +552,9 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
         //    frame 0. Anim_AddByNum(num,loop=1) + Anim_Freeze + SetCurrentFrame(0). --
         case 0x13ba: {
             const std::string& nm = scene_->animName(in.a0);
-            if (!nm.empty()) { Anim::addByName(arc_, nm.c_str(), /*looping*/true, /*frozen*/true); }
+            // The engine sets local_a68 = Anim_AddByNum(...) so the "this" register points at
+            // the just-added anim; mirror that (else a following 0x13c/0x13d "this" misses).
+            if (!nm.empty()) { curAnimSlot_ = Anim::addByName(arc_, nm.c_str(), /*looping*/true, /*frozen*/true); }
             break;
         }
 
@@ -546,7 +564,7 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
         //    (GI_SetDrawMode(0)+draw) isn't modeled. Non-looping sibling of 0x19. --
         case 0x1: {
             const std::string& nm = scene_->animName(in.a0);
-            if (!nm.empty()) { Anim::addByName(arc_, nm.c_str(), /*looping*/false, /*frozen*/false); }
+            if (!nm.empty()) { curAnimSlot_ = Anim::addByName(arc_, nm.c_str(), /*looping*/false, /*frozen*/false); }
             break;
         }
 
@@ -554,7 +572,7 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
         //    walk-table base (unused by our renderer). Sibling of 0x13ba. --
         case 0x19: {
             const std::string& nm = scene_->animName(in.a0);
-            if (!nm.empty()) { Anim::addByName(arc_, nm.c_str(), /*looping*/true, /*frozen*/false); }
+            if (!nm.empty()) { curAnimSlot_ = Anim::addByName(arc_, nm.c_str(), /*looping*/true, /*frozen*/false); }
             break;
         }
 
@@ -572,11 +590,9 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
         //    findByName and is exact. --
         case 0x3f: {
             const std::string& nm = scene_->animName(in.a0);
-            if (strcasecmp(nm.c_str(), "this") == 0) {
-                curAnimSlot_ = -1;
-                for (int s = Anim::MAX_SLOTS - 1; s >= 0; --s) {
-                    if (Anim::active(s)) { curAnimSlot_ = s; break; }
-                }
+            if (isThisSlot(nm.c_str())) {
+                // "_THIS" → keep the last-added/selected slot (engine reuses local_a68),
+                // which the anim-add ops now maintain in curAnimSlot_.
             } else {
                 curAnimSlot_ = Anim::findByName(nm.c_str());
             }
@@ -633,7 +649,7 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
         //    quit/area-change). Headless settles to frame a1 immediately so it can't hang. --
         case 0x13b: {
             const std::string& nm = scene_->animName(in.a0);
-            int slot = (strcasecmp(nm.c_str(), "this") == 0) ? curAnimSlot_
+            int slot = (isThisSlot(nm.c_str())) ? curAnimSlot_
                                                              : Anim::findByName(nm.c_str());
             if (slot >= 0) {
                 Anim::setStopFrame(slot, in.a1);
@@ -648,10 +664,13 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
             break;
         }
 
-        // -- FREEZE_ANIM: freeze animName(a0) at frame a1 (SetCurrentFrame + stop). --
+        // -- FREEZE_ANIM: freeze animName(a0) (or the current "this" slot) at frame a1
+        //    (SetCurrentFrame + stop). The "this" case is the common one: load anim (0x19)
+        //    then freeze "this" — without it the just-loaded anim never stops and loops. --
         case 0x13c: {
             const std::string& nm = scene_->animName(in.a0);
-            int slot = Anim::findByName(nm.c_str());
+            int slot = (isThisSlot(nm.c_str())) ? curAnimSlot_
+                                                             : Anim::findByName(nm.c_str());
             if (slot >= 0) { Anim::setCurrentFrame(slot, in.a1); Anim::freeze(slot); }
             break;
         }
@@ -662,7 +681,7 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
         //    final frame instead of a1. --
         case 0x14d: {
             const std::string& nm = scene_->animName(in.a0);
-            int slot = (strcasecmp(nm.c_str(), "this") == 0) ? curAnimSlot_
+            int slot = (isThisSlot(nm.c_str())) ? curAnimSlot_
                                                              : Anim::findByName(nm.c_str());
             if (slot >= 0) {
                 Anim::setCurrentFrame(slot, Anim::frameCount(slot) - 1);
@@ -675,7 +694,8 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
         //    like 0x195, makes animName(a0) animate again. --
         case 0x13d: {
             const std::string& nm = scene_->animName(in.a0);
-            int slot = Anim::findByName(nm.c_str());
+            int slot = (isThisSlot(nm.c_str())) ? curAnimSlot_
+                                                             : Anim::findByName(nm.c_str());
             if (slot >= 0) { Anim::resetFreeze(slot); }
             break;
         }
@@ -920,7 +940,7 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
         //    frame, no loop) so it can never hang. --
         case 0x1f: {
             const std::string& nm = scene_->animName(in.a0);
-            int slot = (strcasecmp(nm.c_str(), "this") == 0) ? curAnimSlot_
+            int slot = (isThisSlot(nm.c_str())) ? curAnimSlot_
                                                              : Anim::findByName(nm.c_str());
             if (slot >= 0) {
                 int last = Anim::frameCount(slot) - 1;
@@ -953,7 +973,7 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
         //    doesn't model; the rendering consumer is ported.) --
         case 0x137: {
             const std::string& nm = scene_->animName(in.a0);
-            int slot = (strcasecmp(nm.c_str(), "this") == 0) ? curAnimSlot_
+            int slot = (isThisSlot(nm.c_str())) ? curAnimSlot_
                                                              : Anim::findByName(nm.c_str());
             if (slot >= 0) { Anim::setZBase(slot, in.a1); }
             break;
@@ -991,7 +1011,7 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
         //    setCurrentFrame(slot, a1); drawAll() renders it at the slot's position. --
         case 0x166: {
             const std::string& nm = scene_->animName(in.a0);
-            int slot = (strcasecmp(nm.c_str(), "this") == 0) ? curAnimSlot_
+            int slot = (isThisSlot(nm.c_str())) ? curAnimSlot_
                                                              : Anim::findByName(nm.c_str());
             if (slot >= 0) { Anim::setCurrentFrame(slot, in.a1); }
             break;
@@ -1072,13 +1092,13 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
         case 0x3c:    pendingCb_ = in.a0; break;             // SET_CALLBACK_ID (iRam007c4998 = a0)
         case 0x159: {                                        // arm cb to fire at the last frame
             const std::string& nm = scene_->animName(in.a0);
-            int slot = (strcasecmp(nm.c_str(), "this") == 0) ? curAnimSlot_ : Anim::findByName(nm.c_str());
+            int slot = (isThisSlot(nm.c_str())) ? curAnimSlot_ : Anim::findByName(nm.c_str());
             if (slot >= 0) { Anim::setCompletionCallback(slot, pendingCb_, Anim::frameCount(slot) - 1); }
             break;
         }
         case 0x185: {                                        // arm cb to fire at frame a2 (or end+a2)
             const std::string& nm = scene_->animName(in.a0);
-            int slot = (strcasecmp(nm.c_str(), "this") == 0) ? curAnimSlot_ : Anim::findByName(nm.c_str());
+            int slot = (isThisSlot(nm.c_str())) ? curAnimSlot_ : Anim::findByName(nm.c_str());
             if (slot >= 0) {
                 int frame = (in.a2 < -1) ? Anim::frameCount(slot) + in.a2 : in.a2;
                 Anim::setCompletionCallback(slot, pendingCb_, frame);
@@ -1087,13 +1107,13 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
         }
         case 0x15a: {                                        // clear the anim's completion callback
             const std::string& nm = scene_->animName(in.a0);
-            int slot = (strcasecmp(nm.c_str(), "this") == 0) ? curAnimSlot_ : Anim::findByName(nm.c_str());
+            int slot = (isThisSlot(nm.c_str())) ? curAnimSlot_ : Anim::findByName(nm.c_str());
             if (slot >= 0) { Anim::setCompletionCallback(slot, -1, -1); }
             break;
         }
         case 0x167: {                                        // ANIM_SET_TRIGGER_FRAME (g_anAnimSlotTriggerFrame)
             const std::string& nm = scene_->animName(in.a0);
-            int slot = (strcasecmp(nm.c_str(), "this") == 0) ? curAnimSlot_ : Anim::findByName(nm.c_str());
+            int slot = (isThisSlot(nm.c_str())) ? curAnimSlot_ : Anim::findByName(nm.c_str());
             if (slot >= 0) { Anim::setTriggerFrame(slot, in.a1); }
             break;
         }
