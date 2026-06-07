@@ -652,6 +652,12 @@ int main(int argc, char** argv) {
         std::string next = vm.nextArea();
         if (next.empty()) {
             // No transition requested → this area is interactive (e.g. the menu).
+            // The lifecycle may have played startup SCMs that left their own palette in
+            // place (the menu logos do), so re-apply the area palette before the loop.
+            // (vvi2-style intros transition away and never reach here, so they keep the
+            // pre-lifecycle palette loadAreaVisuals set.)
+            Palette::load(arc, fb, area.c_str(), /*nonBlackOnly*/false);
+            Palette::load(arc, fb, "GENERAL", /*nonBlackOnly*/true);
             next = runScene(scene, vm, disp, fb, bgPlate);
         }
         if (next.empty()) break;    // quit
