@@ -362,8 +362,11 @@ static std::string runScene(Scene& scene, RunProg& vm, Display& disp,
     int animTick = 0;
     for (;;) {
         Theme::advance();                     // keep room music streaming
-        // Advance animations at ~15 fps (every other ~30 fps render frame).
-        if (++animTick % 2 == 0) { Anim::tick(); }
+        // Advance animations at ~15 fps (every other ~30 fps render frame), then run any
+        // anim completion callbacks that fired (ops 0x159/0x167/0x185 -> their script).
+        if (++animTick % 2 == 0) { Anim::tick(); vm.dispatchAnimCallbacks(); }
+        if (vm.quit()) { return ""; }
+        if (!vm.nextArea().empty()) { return vm.nextArea(); }
         int mx = disp.mouseX(), my = disp.mouseY();
         // Headless: optionally hover a button (MENU_HOVER=index) to verify the
         // highlight in the dump.
@@ -598,6 +601,7 @@ int main(int argc, char** argv) {
 
         Anim::reset();              // fresh anim pool per area
         Area::clearSprites();       // drop the previous area's LINKFULL hotspots (op 0x169)
+        Area::resetList();          // clear the script selection list (ops 0x15e-0x165)
         Slider::clearAll();         // drop the previous area's sliders (op 0x19d)
         Audio::clearChannel(Audio::SFX);   // stop the previous room's looping SFX (op 0x15)
         vm.clearTransition();

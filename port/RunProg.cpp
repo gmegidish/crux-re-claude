@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 
 // Opcodes that open an IF-block needing a matching ENDIF. Used to balance nested
 // blocks during a skip-scan. Mirrors the engine's is-opener predicate; expand as
@@ -134,8 +135,24 @@ static const int kHeadlessRestartCap = 1000;
 // Realtime paces at ~30fps; headless settles instantly (no SDL_Delay), like
 // fadeToBlack/showSpeech/0x16d. Returns false if the caller should stop looping
 // (quit requested, or an area change was queued by the script).
+// Drain anim completion callbacks that fired this frame and run each (ops 0x3c/0x159/
+// 0x167/0x185). The engine's Anim_HandleFrameTick fires a slot's script trigger when its
+// anim reaches the trigger frame; Anim queues the program ids, we exec them here. The
+// guard stops a callback's own pumpFrame() from re-draining (the outer loop continues).
+void RunProg::dispatchAnimCallbacks() {
+    if (dispatchingCb_ || scene_ == nullptr) { return; }
+    dispatchingCb_ = true;
+    int prog;
+    while ((prog = Anim::takeFiredCallback()) >= 0) {
+        exec(*scene_, prog, 0);
+        if (quit_ || !nextArea_.empty()) { break; }
+    }
+    dispatchingCb_ = false;
+}
+
 bool RunProg::pumpFrame() {
     Anim::tick();
+    dispatchAnimCallbacks();
     Theme::advance();
     Anim::drawAll(fb_);
     disp_.present(fb_);
@@ -264,6 +281,42 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
             if (sp >= 2) { int b = valStack[--sp]; valStack[sp - 1] -= b; }
             else { Log::warn("RunProg: value-stack underflow (0x183)"); }
             break;
+
+        // -- GV_CAN_DROP (RunProg_Exec @0x00462560 case 0x917): push GV_CanDrop(slot
+        //    animName(a0)/"this", curAnimSlot_) (Graninv @0x00432990). Engine returns
+        //    3 if the GV floating-inventory is disabled, else (per the two slots' drag
+        //    flags) 2=incompatible / 1=GV-open / 0=can-drop. The port models GV minimally
+        //    (Gv::enabled only — no open state, no per-slot drag flags), so this is
+        //    enabled?0:3: when the inventory drag isn't active (the normal case) it returns
+        //    3, which is what exit guards like VVB:93 test (`POP; IF var!=0`) to proceed. --
+        case 0x917:
+            if (sp < 100) { valStack[sp++] = Gv::enabled() ? 0 : 3; }
+            else { Log::warn("RunProg: value-stack overflow (0x917)"); }
+            break;
+
+        // -- GRAN_GET_ANGLE_DIST (RunProg_Exec @0x00462560 case 0x1ff): Gran_GetAngleDist
+        //    (Graninv @0x00434190) — block on a mouse drag, then push the drag's angle
+        //    (degrees 0-360, 0=right, clockwise with y down) and pixel distance. Realtime:
+        //    pump frames while the left button is held, measuring from the drag start to the
+        //    release. Headless can't drag, so push (0,0). The engine's start point is the
+        //    last cursor ref (g_nSliderRefX/Y); the port uses the cursor at entry. --
+        case 0x1ff: {
+            int angle = 0, dist = 0;
+            if (disp_.isRealtime()) {
+                int sx = disp_.mouseX(), sy = disp_.mouseY();
+                while (disp_.leftButtonHeld()) { if (!pumpFrame()) { break; } }
+                int dx = disp_.mouseX() - sx, dy = disp_.mouseY() - sy;
+                if (dx != 0 || dy != 0) {
+                    double a = std::atan2((double)dy, (double)dx) * (180.0 / 3.14159265358979323846);
+                    if (a < 0.0) { a += 360.0; }
+                    angle = (int)(a + 0.5);
+                    dist  = (int)(std::sqrt((double)dx * dx + (double)dy * dy) + 0.5);
+                }
+            }
+            if (sp + 2 <= 100) { valStack[sp++] = angle; valStack[sp++] = dist; }
+            else { Log::warn("RunProg: value-stack overflow (0x1ff)"); }
+            break;
+        }
 
         // -- REGISTER_FKEY: bind keyboard shortcut a1 -> command a0 (Adv_RunScene's
         //    F-key table DAT_00629980/DAT_00629ef0, max 15). The op only registers;
@@ -904,6 +957,34 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
             var(in.a0) = (curAnimSlot_ < 0) ? -1 : Anim::getCurrentFrame(curAnimSlot_);
             break;
 
+        // -- REG_ADD_IMM (0x15b) / REG_SUB_IMM (0x15c): var[a0] += / -= a1. --
+        case 0x15b:  var(in.a0) += in.a1;  break;
+        case 0x15c:  var(in.a0) -= in.a1;  break;
+
+        // -- Area selection-list ops (RunProg_Exec @0x00462560 cases 0x15e-0x165 ->
+        //    AREAS.cpp Area_*List @0x00414a80-0x00414ed0). The script builds/walks a
+        //    cursor-indexed int list (area-query results); ports 1:1 to Area::*. --
+        case 0x15e:  Area::resetList();              break;  // Area_ResetList
+        case 0x15f:  Area::rewindList();             break;  // Area_RewindList
+        case 0x160:  Area::seekListEnd();            break;  // Area_SeekListEnd
+        case 0x161:  var(in.a0) = Area::listNext();  break;  // Area_ListNext -> var
+        case 0x162:  var(in.a0) = Area::listPrev();  break;  // Area_ListPrev -> var
+        case 0x163:  var(in.a0) = Area::listGet();   break;  // Area_ListGet  -> var
+        case 0x164:  Area::listSet(var(in.a0));      break;  // Area_ListSet(var)
+        case 0x165:  Area::listAppend();             break;  // Area_ListAppend
+
+        // -- ANIM_SHOW_FRAME (RunProg_Exec @0x00462560 case 0x166): resolve slot =
+        //    animName(a0)/"this"; Anim_ShowFrame(slot, a1, slotX, slotY) shows frame a1 at
+        //    the slot's position (engine also GI_SetDrawMode(0) — flat fb, n/a). Port:
+        //    setCurrentFrame(slot, a1); drawAll() renders it at the slot's position. --
+        case 0x166: {
+            const std::string& nm = scene_->animName(in.a0);
+            int slot = (strcasecmp(nm.c_str(), "this") == 0) ? curAnimSlot_
+                                                             : Anim::findByName(nm.c_str());
+            if (slot >= 0) { Anim::setCurrentFrame(slot, in.a1); }
+            break;
+        }
+
         // -- SLIDER ops (animated UI sliders; Slider.cpp ports ../src/SLIDER.cpp) --
         //    Each maps 1:1 to a Slider:: call. var(a0) is the slider id (or, for
         //    SET_VALUE, the value). The engine stores ids in g_anSpeechPlayed[a0]
@@ -970,23 +1051,38 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
         case 0x905:   break;  // FILES_LOAD_DIALOG (case 0x905): open the Win32 load-game file
                               // dialog, and on a pick load the save + restart. The port has no
                               // save/load subsystem (no file dialog, no save format) -> no-op
-        case 0x15a:   break;  // Anim_SetCompletionCallback(animName(a0), none): clears an anim's
-                              // completion callback; the port has no anim callbacks -> no-op
-        case 0x159:   break;  // Anim_SetCompletionCallback(slot animName(a0)/"this", iRam007c4998,
-                              // a1, 0xffffffff): arm a completion callback (run pending script id
-                              // iRam007c4998 with arg a1 when the anim finishes). Same subsystem as
-                              // 0x15a/0x3c/0x3d/0x3e — the port models no anim completion callbacks
-                              // (the VM runs each program straight to completion), so there is no
-                              // callback registry to arm -> faithful no-op.
-        case 0x185:   break;  // Anim_SetCompletionCallback(slot animName(a0)/"this", iRam007c4998,
-                              // a1, a2[ or frameCount+a2 if a2<-1]): same as 0x159 but fires the
-                              // callback at a specific frame (a2) rather than at the very end. Same
-                              // unported anim-completion-callback subsystem (cf. 0x159/0x15a) -> no-op.
-        case 0x3c:    break;  // SET_CALLBACK_ID (case 0x3c): iRam007c4998 = a0 — stash the pending
-                              // completion-callback script id. It is consumed only by 0x3d/0x3e
-                              // (Anim_SetCompletionCallback(slot, id, ...): run program `id` when the
-                              // anim finishes). The port models neither anim completion callbacks
-                              // (cf. 0x15a) nor 0x3d/0x3e, so there's nothing to feed -> no-op.
+        // -- Anim completion-callback / trigger subsystem. 0x3c stashes a script program id;
+        //    0x159/0x185 arm it on a slot to fire at end / at a frame; 0x167 sets just the
+        //    trigger frame; 0x15a clears. Anim::tick() queues the program when the anim
+        //    reaches its trigger frame; dispatchAnimCallbacks() (after each tick) runs it. --
+        case 0x3c:    pendingCb_ = in.a0; break;             // SET_CALLBACK_ID (iRam007c4998 = a0)
+        case 0x159: {                                        // arm cb to fire at the last frame
+            const std::string& nm = scene_->animName(in.a0);
+            int slot = (strcasecmp(nm.c_str(), "this") == 0) ? curAnimSlot_ : Anim::findByName(nm.c_str());
+            if (slot >= 0) { Anim::setCompletionCallback(slot, pendingCb_, Anim::frameCount(slot) - 1); }
+            break;
+        }
+        case 0x185: {                                        // arm cb to fire at frame a2 (or end+a2)
+            const std::string& nm = scene_->animName(in.a0);
+            int slot = (strcasecmp(nm.c_str(), "this") == 0) ? curAnimSlot_ : Anim::findByName(nm.c_str());
+            if (slot >= 0) {
+                int frame = (in.a2 < -1) ? Anim::frameCount(slot) + in.a2 : in.a2;
+                Anim::setCompletionCallback(slot, pendingCb_, frame);
+            }
+            break;
+        }
+        case 0x15a: {                                        // clear the anim's completion callback
+            const std::string& nm = scene_->animName(in.a0);
+            int slot = (strcasecmp(nm.c_str(), "this") == 0) ? curAnimSlot_ : Anim::findByName(nm.c_str());
+            if (slot >= 0) { Anim::setCompletionCallback(slot, -1, -1); }
+            break;
+        }
+        case 0x167: {                                        // ANIM_SET_TRIGGER_FRAME (g_anAnimSlotTriggerFrame)
+            const std::string& nm = scene_->animName(in.a0);
+            int slot = (strcasecmp(nm.c_str(), "this") == 0) ? curAnimSlot_ : Anim::findByName(nm.c_str());
+            if (slot >= 0) { Anim::setTriggerFrame(slot, in.a1); }
+            break;
+        }
         case 0x19b:   break;  // Anim_BeginNormalDraw (RunProg_Exec @0x00462560 case 0x19b ->
                               // thunk 0x004014ec -> 0x0040de00): GI_SetDrawMode(0) +
                               // GI_LockActiveSurf_v9(&DAT_005296f8). Twin of 0x19c — a DirectDraw
@@ -995,6 +1091,12 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
                               // dropped Anim_EnableDraw).
         case 0x19c:   break;  // Anim_FlushDraw (case 0x19c -> 0x0040df40): GI_SetDrawMode(0) +
                               // GI_LockActiveSurf_v10. Same as 0x19b; flat framebuffer -> no-op
+        case 0x15d:   break;  // ENTER_CURSOR_SELECT (case 0x15d): set DAT_00629f70=2 (cursor-
+                              // selection input mode), stash target a0, set g_nCursorMode=1, then
+                              // Adv_RefreshCursor. The port has no cursor-select input flow (the
+                              // cursor is hover-driven per-frame from Area::cursorId in runScene, and
+                              // the select-mode has no consumer), so faithful no-op. (Pairs with the
+                              // already-no-op 0x16a EXIT_CURSOR_SELECT.)
         case 0x12d:   break;  // SPEECH_WAIT: tick frames while speech plays; no speech yet
         case 0x12e:   break;  // SPEECH_END: clears tick-suppress / restores cursor; no speech yet
         case 0x1838:  break;  // GRAN_INIT_TAPE

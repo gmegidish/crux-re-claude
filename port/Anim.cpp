@@ -25,11 +25,18 @@ struct Slot {
     int    stopFrame = -1;            // halt auto-advance at this frame (-1 = none); g_anAnimSlotStopFrame
     int    zBase = 0;                 // Z-sort / draw-order key (g_nCharWalkTableBase, op 0x137)
     int    groupId = -1;              // group this slot belongs to (-1 = none); g_anAnimSlotGroupId
+    int    triggerFrame = -1;        // fire the completion callback when curFrame reaches this (op 0x167); g_anAnimSlotTriggerFrame
+    int    completionCb = -1;        // script program id to run when triggerFrame is reached (ops 0x3c/0x159/0x185); -1 = none
     std::string name;
     std::vector<Frame> frames;
 };
 
 Slot g_slots[Anim::MAX_SLOTS];
+
+// Completion-callback programs whose anims reached their trigger frame this tick. The
+// VM drains these (Anim::takeFiredCallback) and runs each — the engine's Anim_HandleFrameTick
+// -> script-trigger dispatch. A queue keeps Anim decoupled from RunProg.
+std::vector<int> g_firedCbs;
 
 // --- anim-group state (mirrors engine globals g_anGroupSize / g_anGroupTriggerPct /
 //     g_anGroupActiveSlot / g_nGroupCount / g_nGroupMemberTemp). A group is a set of
@@ -101,6 +108,7 @@ namespace Anim {
 
 void reset() {
     for (auto& s : g_slots) { s = Slot{}; }
+    g_firedCbs.clear();
     for (auto& g : g_groups) { g = Group{}; }
     g_openGroup = -1;
 }
@@ -198,8 +206,9 @@ void tick() {
         // Honor a stop frame: don't advance past it.
         if (s.stopFrame >= 0 && s.curFrame >= s.stopFrame) { continue; }
         ++s.curFrame;
-        if (s.stopFrame >= 0 && s.curFrame >= s.stopFrame) { s.curFrame = s.stopFrame; continue; }
-        if (s.curFrame >= (int)s.frames.size()) {
+        if (s.stopFrame >= 0 && s.curFrame >= s.stopFrame) {
+            s.curFrame = s.stopFrame;
+        } else if (s.curFrame >= (int)s.frames.size()) {
             if (s.looping) { s.curFrame = 0; }
             else { s.curFrame = (int)s.frames.size() - 1; s.frozen = true; }
             // A grouped member whose anim just ended is released so the group re-rolls.
@@ -207,7 +216,32 @@ void tick() {
                 g_groups[s.groupId].activeSlot = -1;
             }
         }
+        // Completion callback (ops 0x3c/0x159/0x167/0x185): fire once when the anim reaches
+        // its trigger frame, then clear (one-shot). The VM drains g_firedCbs and runs them.
+        if (s.completionCb >= 0 && s.triggerFrame >= 0 && s.curFrame >= s.triggerFrame) {
+            g_firedCbs.push_back(s.completionCb);
+            s.completionCb = -1;
+            s.triggerFrame = -1;
+        }
     }
+}
+
+void setTriggerFrame(int slot, int frame) {
+    if (slot >= 0 && slot < MAX_SLOTS && g_slots[slot].active) { g_slots[slot].triggerFrame = frame; }
+}
+
+void setCompletionCallback(int slot, int progId, int frame) {
+    if (slot >= 0 && slot < MAX_SLOTS && g_slots[slot].active) {
+        g_slots[slot].completionCb = progId;
+        g_slots[slot].triggerFrame = frame;
+    }
+}
+
+int takeFiredCallback() {
+    if (g_firedCbs.empty()) { return -1; }
+    int v = g_firedCbs.front();
+    g_firedCbs.erase(g_firedCbs.begin());
+    return v;
 }
 
 int findByName(const char* name) {

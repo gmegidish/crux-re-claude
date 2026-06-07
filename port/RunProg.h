@@ -47,6 +47,9 @@ private:
     int  scriptFlag_ = 0;                 // DAT_00629f54: set by 0x84f, read by 0x857
     int  curAnimSlot_ = -1;               // DAT_007c4108: "STANI" register — anim slot
                                           // selected by op 0x3f for later named-anim ops
+    int  pendingCb_ = -1;                 // iRam007c4998: pending completion-callback prog id
+                                          // (op 0x3c), consumed by 0x159/0x185 to arm an anim cb
+    bool dispatchingCb_ = false;          // re-entrancy guard for dispatchAnimCallbacks()
     std::vector<int> fkeyCmd_, fkeyKey_;  // 0x179: F-key shortcut -> command registry (max 15)
     std::vector<int> objectList_;         // scene node/object presence list (queried by 0x6f);
                                           // populated by the not-yet-ported object-display ops
@@ -55,6 +58,12 @@ private:
     // [0,1500) would otherwise write straight past vars_ into adjacent members
     // (nextArea_/playlist_) — a stack-smash. Guard it and log.
     int& var(int i);
+
+public:
+    // Run any anim completion callbacks that fired this frame (ops 0x3c/0x159/0x167/0x185).
+    // Called after each Anim::tick() (render loop + pumpFrame). Re-entrancy-guarded.
+    void dispatchAnimCallbacks();
+private:
 
     bool pumpFrame();                    // op 0x3b: advance/render one paced frame; false = stop
     void fadeToBlack(int msPerStep);     // op 0x204: smooth palette fade-out

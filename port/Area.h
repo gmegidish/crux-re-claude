@@ -63,6 +63,18 @@ bool removeSprite(int tag);
 int  spriteCount();
 bool spriteInfo(int i, int& animSlot, int& node, int& flags);
 
+// Selection list (engine g_anAreaList + cursor): a cursor-indexed int list the script
+// builds/walks via RunProg ops 0x15e-0x165 to accumulate area-query results. Ports the
+// src/AREAS.cpp Area_*List family. resetList clears it (call on area change).
+void resetList();                 // 0x15e: count=0, cursor=0
+void rewindList();                // 0x15f: cursor=0
+void seekListEnd();               // 0x160: cursor=count-1
+int  listNext();                  // 0x161: advance cursor; 0 ok / -1 at end (clamped)
+int  listPrev();                  // 0x162: retreat cursor; 0 ok / -1 at start (clamped)
+int  listGet();                   // 0x163: value at cursor
+void listSet(int value);          // 0x164: write value at cursor
+void listAppend();                // 0x165: append a 0 slot, cursor -> it
+
 // Low byte of p[4] for `node`, or -1 if `node` is out of range.
 int cursorId(int node);
 

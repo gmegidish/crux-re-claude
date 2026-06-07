@@ -60,6 +60,16 @@ void setZBase(int slot, int base);
 void startGroup(int size, int triggerPct);
 // True while an open group is still waiting for members (drives addByName auto-join).
 bool groupOpen();
+
+// --- per-slot completion callback / trigger frame (engine g_anAnimSlotTriggerFrame +
+//     the slot's script-trigger; ops 0x3c set-id / 0x159 fire-at-end / 0x167 set-frame /
+//     0x185 fire-at-frame). When tick() advances `slot` to its triggerFrame, the slot's
+//     completionCb (a script program id) is queued; the VM drains it via takeFiredCallback
+//     and runs it. One-shot: cleared after firing. ---
+void setTriggerFrame(int slot, int frame);            // 0x167: where to fire (no cb change)
+void setCompletionCallback(int slot, int progId, int frame);  // 0x159/0x185: cb + frame; progId<0 clears
+// Pop the next fired callback program id (FIFO), or -1 if none. Drained each frame by RunProg.
+int  takeFiredCallback();
 void setPosition(int slot, int x, int y);
 void setCurrentFrame(int slot, int frame);
 void freeze(int slot);

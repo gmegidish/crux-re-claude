@@ -186,6 +186,14 @@ opcode count is **~390**; the address space is sparse with large reserved gaps
 | 0x15b | REG_ADD_IMM | `var[reg] += imm` |
 | 0x15c | REG_SUB_IMM | `var[reg] -= imm` |
 | 0x15d | ENTER_CURSOR_SELECT | Enter cursor-selection mode (`DAT_00629f70=2`, cursor→1) |
+| 0x15e | AREA_LIST_RESET | `Area_ResetList` (count=0, cursor=0) — selection-list family @0x00414a80.. |
+| 0x15f | AREA_LIST_REWIND | `Area_RewindList` (cursor=0) |
+| 0x160 | AREA_LIST_SEEK_END | `Area_SeekListEnd` (cursor=count-1) |
+| 0x161 | AREA_LIST_NEXT | `var[reg] = Area_ListNext()` (0 ok / -1 at end) |
+| 0x162 | AREA_LIST_PREV | `var[reg] = Area_ListPrev()` (0 ok / -1 at start) |
+| 0x163 | AREA_LIST_GET | `var[reg] = Area_ListGet()` (value at cursor) |
+| 0x164 | AREA_LIST_SET | `Area_ListSet(var[reg])` |
+| 0x165 | AREA_LIST_APPEND | `Area_ListAppend()` (append 0, cursor→it) |
 | 0x166 | ANIM_SHOW_FRAME | `Anim_ShowFrame` at slot X/Y |
 | 0x167 | ANIM_SET_TRIGGER_FRAME | Set `g_anAnimSlotTriggerFrame[slot] = arg1` |
 | 0x168 | CALL_PROG | GOSUB: push return + context, jump to `iRam007c4998` |
@@ -234,7 +242,7 @@ opcode count is **~390**; the address space is sparse with large reserved gaps
 | 0x1f9 | IF_UNK_FALSE_SKIP | Skip block if condition == 0 |
 | 0x1fd | NOP | No-op |
 | 0x1fe | ANIM_ADD_CENTERED | Add anim positioned centred on last frame size |
-| 0x1ff | PUSH_HERO_XY | Push hero (x,y) onto RPN stack |
+| 0x1ff | GRAN_GET_ANGLE_DIST | `Gran_GetAngleDist` (Graninv @0x00434190): block on a mouse drag, push angle (deg 0-360, 0=right CW) + pixel distance. (Old table said "push hero XY" — wrong.) |
 
 ### Cursor, audio channels, math, area sprites (0x200–0x2c5)
 
@@ -316,7 +324,7 @@ opcode count is **~390**; the address space is sparse with large reserved gaps
 | 0x912–0x914 | ANIM_SET_TRIGGER_{1,2,3} | Set trigger type N on named slot |
 | 0x915 | MOV_STOP_CHAR | Stop/deactivate character id |
 | 0x916 | ANIM_REWIND_SLOT | Rewind named slot to start |
-| 0x917 | ANIM_GET_FRAME_COUNT_STACK | Push frame count to stack |
+| 0x917 | GV_CAN_DROP | Push `GV_CanDrop(slot, curSlot)` (Graninv @0x00432990): 3=GV-inventory disabled, 2=incompatible, 1=open, 0=can-drop. (Old table said "frame count" — wrong.) |
 | 0x918/0x919 | SCHED_EN/DISABLE_SCRIPT_TICK | Enable/disable per-script tick |
 | 0x91a | GFX_FLIP | Flip/present display |
 | 0x91c | SCHED_TRIGGER_EVENT | Fire a scheduler event |

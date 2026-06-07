@@ -34,6 +34,13 @@ int g_count = 0;
 struct SpriteLink { int animSlot; int tag; int flags; };
 std::vector<SpriteLink> g_sprites;
 
+// Selection list (engine g_anAreaList[64] + count/cursor at 0x00646328..): a small
+// cursor-indexed int list the script builds/iterates via the Area_List* ops
+// (RunProg 0x15e..0x165). Used to accumulate and walk area-query results.
+int g_list[64];
+int g_listCount  = 0;
+int g_listCursor = 0;
+
 // Read one int32 from record `node` at word index `w`. Bounds-safe.
 int32_t recordInt(int node, int w) {
     if (node < 0 || node >= g_count) {
@@ -110,6 +117,41 @@ bool Area::removeSprite(int tag) {
         }
     }
     return false;
+}
+
+// --- Selection list (ports src/AREAS.cpp Area_*List, RunProg ops 0x15e-0x165) ---
+void Area::resetList()    { g_listCount = 0; g_listCursor = 0; }   // 0x15e Area_ResetList
+void Area::rewindList()   { g_listCursor = 0; }                    // 0x15f Area_RewindList
+void Area::seekListEnd()  { g_listCursor = g_listCount - 1; }      // 0x160 Area_SeekListEnd
+
+int Area::listNext() {                                             // 0x161 Area_ListNext
+    g_listCursor++;
+    if (g_listCursor < g_listCount) {
+        return 0;
+    }
+    g_listCursor = g_listCount - 1;
+    return -1;
+}
+
+int Area::listPrev() {                                             // 0x162 Area_ListPrev
+    g_listCursor--;
+    if (g_listCursor < 0) {
+        g_listCursor = 0;
+        return -1;
+    }
+    return 0;
+}
+
+int  Area::listGet()         { return (g_listCursor >= 0 && g_listCursor < 64) ? g_list[g_listCursor] : 0; }  // 0x163
+void Area::listSet(int v)    { if (g_listCursor >= 0 && g_listCursor < 64) { g_list[g_listCursor] = v; } }     // 0x164
+
+void Area::listAppend() {                                          // 0x165 Area_ListAppend
+    if (g_listCount >= 64) {
+        Log::warn("Area: selection list full (64)");
+        return;
+    }
+    g_listCursor = g_listCount;
+    g_list[g_listCount++] = 0;
 }
 
 int Area::spriteCount() {
