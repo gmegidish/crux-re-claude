@@ -204,6 +204,7 @@ opcode count is **~390**; the address space is sparse with large reserved gaps
 | 0x174 | STACK_POP | Pop RPN stack → `var[reg]` |
 | 0x175 | ANIM_SET_X | `g_anAnimSlotX[stani] = var[reg]` |
 | 0x176 | ANIM_SET_Y | `g_anAnimSlotY[stani] = var[reg]` |
+| 0x178 | TIMER_ADD_SYNC | `Timer_AddSync(a1, a0)` (@0x0047e7b0): one-shot timer — run program a0 after a1 ticks (sync variant of 0x196; only the dispatch timing differs). Timer table @0x007d4dc8, ticked by `Timer_Tick_Callback`. |
 | 0x179 | PUSH_EVENT | Push (arg1,arg0) onto event/callback queue (max 15) |
 | 0x17a | STOP_LIPSYNC_TXT | `SndMem_StopLipsync` + `Txt_Reset` (canonical "end speech") |
 | 0x17b | ANIM_SELECT_SLOT | Resolve & select anim slot for deferred use |

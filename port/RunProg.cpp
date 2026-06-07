@@ -2,6 +2,7 @@
 #include "ScmPlayer.h"
 #include "Audio.h"
 #include "Anim.h"
+#include "Timer.h"
 #include "Slider.h"
 #include "Palette.h"
 #include "Text.h"
@@ -147,13 +148,24 @@ void RunProg::dispatchAnimCallbacks() {
         exec(*scene_, prog, 0);
         if (quit_ || !nextArea_.empty()) { break; }
     }
+    while ((prog = Timer::takeFired()) >= 0) {            // elapsed script timers (0x178/0x196/0x17e)
+        exec(*scene_, prog, 0);
+        if (quit_ || !nextArea_.empty()) { break; }
+    }
     dispatchingCb_ = false;
 }
 
 bool RunProg::pumpFrame() {
     Anim::tick();
+    Timer::tick();                                        // count down script timers alongside anims
     dispatchAnimCallbacks();
     Theme::advance();
+    // Restore the clean backdrop before compositing anims, else each frame of a walk/
+    // blocking-op animation smears on top of the last (the "20 grannies" bug). Matches
+    // runScene's per-frame `memcpy(bgPlate)`; falls back to clear if no backdrop is set.
+    if (bg_.size() == (size_t)fb_.width() * fb_.height()) {
+        std::memcpy(fb_.pixels(), bg_.data(), bg_.size());
+    }
     Anim::drawAll(fb_);
     disp_.present(fb_);
     if (disp_.isRealtime()) {
@@ -1041,13 +1053,15 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
         // -- subsystem ops we haven't built yet: faithful no-ops --
         case 0x2c0:   break;  // g_nPalState=5 (fade-to-target): a request to the per-frame palette
                               // state machine (Anim_TickPalette), not ported — palettes realize directly
-        case 0x18f:   break;  // Timer_Kill(a0): remove an async timer; the timer subsystem isn't
-                              // ported (no timers ever registered), so this finds nothing -> no-op
-        case 0x17e:   break;  // Timer_AddWithReset(a1 frames, a0): schedule a repeating async-prog
-                              // callback; the timer/async-prog dispatch isn't ported yet -> no-op
-        case 0x196:   break;  // Timer_AddAsync(a1, a0) (case 0x196 -> 0x0047e3a0): register a
-                              // per-frame async timer firing program a0; same unported timer/
-                              // async-prog dispatch as 0x17e/0x18f -> no-op
+        // -- Script timers (Timer.cpp ports TIMERS.cpp): run program a0 after a1 ticks.
+        //    0x178 AddSync / 0x196 AddAsync are one-shot (the port runs both the same way);
+        //    0x17e AddWithReset repeats every a1; 0x18f Kill removes timers for program a0.
+        //    Timer::tick() (alongside Anim::tick) counts them down; dispatchAnimCallbacks()
+        //    runs any that fired. --
+        case 0x178:   Timer::addOnce(in.a0, in.a1);    break;  // Timer_AddSync(a1, a0)
+        case 0x196:   Timer::addOnce(in.a0, in.a1);    break;  // Timer_AddAsync(a1, a0)
+        case 0x17e:   Timer::addRepeat(in.a0, in.a1);  break;  // Timer_AddWithReset(a1, a0)
+        case 0x18f:   Timer::kill(in.a0);              break;  // Timer_Kill(a0)
         case 0x905:   break;  // FILES_LOAD_DIALOG (case 0x905): open the Win32 load-game file
                               // dialog, and on a pick load the save + restart. The port has no
                               // save/load subsystem (no file dialog, no save format) -> no-op

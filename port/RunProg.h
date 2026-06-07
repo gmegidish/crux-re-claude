@@ -30,6 +30,11 @@ public:
     const std::string& nextArea() const { return nextArea_; }  // INVCHAIN target ("" = none)
     void clearTransition() { nextArea_.clear(); }
 
+    // Clean backdrop (indexed pixels) that pumpFrame() restores before drawing anims, so
+    // walk/blocking-op animations don't smear frame-on-frame. Set per area by runScene.
+    void setBackground(const uint8_t* px, size_t n) { bg_.assign(px, px + n); }
+    void clearBackground() { bg_.clear(); }   // drop the backdrop (on area change)
+
 private:
     ResArchive&  arc_;
     Display&     disp_;
@@ -53,6 +58,7 @@ private:
     std::vector<int> fkeyCmd_, fkeyKey_;  // 0x179: F-key shortcut -> command registry (max 15)
     std::vector<int> objectList_;         // scene node/object presence list (queried by 0x6f);
                                           // populated by the not-yet-ported object-display ops
+    std::vector<uint8_t> bg_;             // clean backdrop for pumpFrame() to restore each frame
 
     // Bounds-guarded access to the variable file. A script that indexes out of
     // [0,1500) would otherwise write straight past vars_ into adjacent members

@@ -18,6 +18,7 @@
 #include "Cursor.h"
 #include "Area.h"
 #include "Slider.h"
+#include "Timer.h"
 #include "Palette.h"
 #include "Theme.h"
 #include "Sentence.h"
@@ -352,6 +353,10 @@ static std::string runScene(Scene& scene, RunProg& vm, Display& disp,
     fb.clear(0);
     Anim::blitResourceFrame0(arc, fb, areaName.c_str(), 6, 0, 0);      // area backdrop
     std::vector<uint8_t> bgPlate(fb.pixels(), fb.pixels() + (size_t)fb.width() * fb.height());
+    // Hand the backdrop to the VM so pumpFrame() (blocking ops like 0x1f WAIT_ANIM_END that
+    // drive walk animations) restores a clean background each frame instead of smearing
+    // every frame on top of the last (the "20 grannies" bug).
+    vm.setBackground(bgPlate.data(), bgPlate.size());
 
     // Optional area-node map: AREA_PNG=<path> dumps a 640x480 PNG of every node's
     // bbox over the (dimmed) backdrop, plus a per-node field log.
@@ -364,7 +369,7 @@ static std::string runScene(Scene& scene, RunProg& vm, Display& disp,
         Theme::advance();                     // keep room music streaming
         // Advance animations at ~15 fps (every other ~30 fps render frame), then run any
         // anim completion callbacks that fired (ops 0x159/0x167/0x185 -> their script).
-        if (++animTick % 2 == 0) { Anim::tick(); vm.dispatchAnimCallbacks(); }
+        if (++animTick % 2 == 0) { Anim::tick(); Timer::tick(); vm.dispatchAnimCallbacks(); }
         if (vm.quit()) { return ""; }
         if (!vm.nextArea().empty()) { return vm.nextArea(); }
         int mx = disp.mouseX(), my = disp.mouseY();
@@ -602,6 +607,8 @@ int main(int argc, char** argv) {
         Anim::reset();              // fresh anim pool per area
         Area::clearSprites();       // drop the previous area's LINKFULL hotspots (op 0x169)
         Area::resetList();          // clear the script selection list (ops 0x15e-0x165)
+        Timer::clear();             // drop the previous area's script timers (ops 0x178/0x196/0x17e)
+        vm.clearBackground();       // forget the previous area's backdrop (pumpFrame restore)
         Slider::clearAll();         // drop the previous area's sliders (op 0x19d)
         Audio::clearChannel(Audio::SFX);   // stop the previous room's looping SFX (op 0x15)
         vm.clearTransition();

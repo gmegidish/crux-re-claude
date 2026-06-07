@@ -24,7 +24,7 @@ CXXFLAGS := -std=c++17 -Wall -Wextra -O2 -g -MMD -MP $(shell pkg-config --cflags
 LDFLAGS  := $(shell pkg-config --libs sdl2)
 
 SRCS := main.cpp ResArchive.cpp Framebuffer.cpp Display.cpp Scm.cpp Sprite.cpp Bani.cpp \
-        ScmPlayer.cpp Scene.cpp RunProg.cpp Audio.cpp Anim.cpp Cursor.cpp Area.cpp HelpBlit.cpp Palette.cpp Text.cpp Theme.cpp Gv.cpp Sentence.cpp TextRender.cpp Slider.cpp
+        ScmPlayer.cpp Scene.cpp RunProg.cpp Timer.cpp Audio.cpp Anim.cpp Cursor.cpp Area.cpp HelpBlit.cpp Palette.cpp Text.cpp Theme.cpp Gv.cpp Sentence.cpp TextRender.cpp Slider.cpp
 OBJS := $(SRCS:.cpp=.o)
 # dumpprog is a standalone tool (no SDL): just the resource loader + scene parser.
 DUMP_OBJS := dumpprog.o Scene.o ResArchive.o
