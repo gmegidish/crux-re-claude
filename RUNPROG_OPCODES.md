@@ -288,21 +288,25 @@ opcode count is **~390**; the address space is sparse with large reserved gaps
 | 0x2c4 | IF_NOT_GAME_MODE | Skip block if cursor mode != 1 |
 | 0x2c5 | SCHED_SET_SUBMODE | Set sub-mode/state |
 
-### Speech vars, text mode (0x84d–0x858)
+### Master volume / theme room / text align+mode / gamma — get/set pairs (0x84d–0x858)
+
+Verified against the engine switch (RunProg_Exec @0x00462560, thunks resolved). This block
+is **not** speech/sound — it's get/set accessors for the master mixer volume, theme room,
+text alignment/mode, a global flag, and screen gamma. Earlier `SND_*` names here were wrong.
 
 | Opcode | Name | Action |
 |--------|------|--------|
-| 0x84d | SND_CLAMP_SPEECH_VAR | Clamp `var[id]` to [0,10]; play silence if 0 |
-| 0x84e | SND_PLAY_SPEECH_FULL | Play speech with full setup using var |
-| 0x84f | SET_FLAG_IF_VAR_ZERO | `DAT_00629f54 = (var[id]==0)` |
-| 0x850 | SND_GET_SPEECH_DURATION | Speech duration → `var[id]` |
-| 0x851 | SND_PLAY_VOICE | Play voice track by var |
-| 0x852 | TXT_SET_MODE_BY_VAR | `Txt_SetMode` from var |
-| 0x853 | ASSERT_AND_RESTART | Assert var non-zero; hard restart/error |
-| 0x855 | SND_GET_MUSIC_POS | Music position → var |
-| 0x856 | TXT_GET_MODE | Text mode → var |
-| 0x857 | SET_FLAG_IF_FLAG_ZERO | `var[id] = (DAT_00629f54==0)` |
-| 0x858 | SND_GET_SOUND_STATE | Sound state → var |
+| 0x84d | MIXER_SET_MASTER_VOL | Clamp `var[id]` to [0,10] (write back), then `Mixer_SetMasterVolume(var==0 ? -10000 : (var-10)*300)` millibels (0x00470400, Ghidra-misnamed "Snd_StopChannel"). 0 = mute, 10 = full. |
+| 0x84e | THEME_SET_ROOM | `Theme_SetRoom(var[id])` (0x0047cba0) — select the room-music sequencer track |
+| 0x84f | GFLAG_SET_FROM_VAR_ZERO | `DAT_00629f54 = (var[id]==0)` — set the global flag from a var |
+| 0x850 | TXT_GET_ALIGN | `var[id] = Txt_GetAlign()` (0x00475b50) |
+| 0x851 | TXT_SET_ALIGN | `Txt_SetAlign(var[id])` (0x00475be0) → `g_nTxtAlign` (0=left/1=center/2=right) |
+| 0x852 | TXT_SET_MODE | `Txt_SetMode(var[id])` |
+| 0x853 | SCHED_SET_GAMMA | `Sched_SetGamma(var[id])` (0x0046c5a0) + `SetPal_WaitOrRealizeIfNeeded()` (re-realizes the palette through the new gamma). Has a Debug_Assert on the var; the action is the gamma set, not a restart. |
+| 0x855 | THEME_GET_ROOM | `var[id] = Theme_GetRoom()` (0x0047cc70) |
+| 0x856 | TXT_GET_MODE | `var[id] = Txt_GetMode()` |
+| 0x857 | GFLAG_GET_ZERO | `var[id] = (DAT_00629f54==0)` — read the global flag |
+| 0x858 | SCHED_GET_GAMMA | `var[id] = Sched_GetGamma()` (0x0046c630) |
 
 ### Stack-based gfx, save dialogs, Gran mini-games (0x8fd–0x91c)
 
