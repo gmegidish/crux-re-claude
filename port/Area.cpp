@@ -2,6 +2,9 @@
 #include "Anim.h"
 #include "Log.h"
 #include <cstring>
+#include <cstdlib>
+#include <cstdio>
+#include <string>
 #include <vector>
 
 namespace {
@@ -61,6 +64,45 @@ int enabledByte(int node) {
     return (int)((flags >> 8) & 0xff);
 }
 
+// --- AREA_LOG=1: dump area state to the console whenever it changes (debug aid). ---
+bool areaLogOn() {
+    static const bool on = std::getenv("AREA_LOG") != nullptr;
+    return on;
+}
+
+// One compact line: the currently hittable static nodes (type!=2 && enabled byte 0) plus
+// the LINKFULL sprite areas — i.e. exactly what Area::hitTest can resolve right now.
+void logAreaNodes(const char* why) {
+    if (!areaLogOn()) { return; }
+    std::string nodes, sprites;
+    char buf[160];
+    for (int n = 0; n < g_count; ++n) {
+        if (recordInt(n, kType) == kTypeExcluded || enabledByte(n) != 0) { continue; }
+        std::snprintf(buf, sizeof buf, "%s%d(t0x%x:%d,%d,%d,%d)", nodes.empty() ? "" : " ",
+                      n, recordInt(n, 5), recordInt(n, kBboxX1), recordInt(n, kBboxY1),
+                      recordInt(n, kBboxX2), recordInt(n, kBboxY2));
+        nodes += buf;
+    }
+    for (const SpriteLink& s : g_sprites) {
+        std::snprintf(buf, sizeof buf, "%santslot%d(t0x%x,f%d)", sprites.empty() ? "" : " ",
+                      s.animSlot, s.tag, s.flags);
+        sprites += buf;
+    }
+    Log::info("AREA[%s] hittable={%s} sprites={%s}", why, nodes.c_str(), sprites.c_str());
+}
+
+// The script selection list (g_list, ops 0x15e-0x165): contents + cursor.
+void logSelList(const char* why) {
+    if (!areaLogOn()) { return; }
+    std::string vals;
+    char buf[24];
+    for (int i = 0; i < g_listCount; ++i) {
+        std::snprintf(buf, sizeof buf, "%s%d", i ? "," : "", g_list[i]);
+        vals += buf;
+    }
+    Log::info("AREA list[%s] count=%d cursor=%d [%s]", why, g_listCount, g_listCursor, vals.c_str());
+}
+
 } // namespace
 
 void Area::load(const uint8_t* records, int count) {
@@ -76,6 +118,7 @@ void Area::load(const uint8_t* records, int count) {
     std::memcpy(g_records.data(), records, (size_t)count * kRecordBytes);
     g_count = count;
     Log::info("Area: loaded %d node(s)", g_count);
+    logAreaNodes("load");
 }
 
 void Area::clear() {
@@ -103,16 +146,19 @@ void Area::linkFull(int animSlot, int tag, int flags) {
         return;
     }
     g_sprites.push_back({ animSlot, tag, flags });
+    logAreaNodes("linkfull");
 }
 
 void Area::clearSprites() {
     g_sprites.clear();
+    logAreaNodes("clearsprites");
 }
 
 bool Area::removeSprite(int tag) {
     for (size_t i = 0; i < g_sprites.size(); ++i) {
         if (g_sprites[i].tag == tag) {
             g_sprites.erase(g_sprites.begin() + (long)i);
+            logAreaNodes("removesprite");
             return true;
         }
     }
@@ -120,7 +166,7 @@ bool Area::removeSprite(int tag) {
 }
 
 // --- Selection list (ports src/AREAS.cpp Area_*List, RunProg ops 0x15e-0x165) ---
-void Area::resetList()    { g_listCount = 0; g_listCursor = 0; }   // 0x15e Area_ResetList
+void Area::resetList()    { g_listCount = 0; g_listCursor = 0; logSelList("reset"); }   // 0x15e Area_ResetList
 void Area::rewindList()   { g_listCursor = 0; }                    // 0x15f Area_RewindList
 void Area::seekListEnd()  { g_listCursor = g_listCount - 1; }      // 0x160 Area_SeekListEnd
 
@@ -143,7 +189,7 @@ int Area::listPrev() {                                             // 0x162 Area
 }
 
 int  Area::listGet()         { return (g_listCursor >= 0 && g_listCursor < 64) ? g_list[g_listCursor] : 0; }  // 0x163
-void Area::listSet(int v)    { if (g_listCursor >= 0 && g_listCursor < 64) { g_list[g_listCursor] = v; } }     // 0x164
+void Area::listSet(int v)    { if (g_listCursor >= 0 && g_listCursor < 64) { g_list[g_listCursor] = v; logSelList("set"); } }     // 0x164
 
 void Area::listAppend() {                                          // 0x165 Area_ListAppend
     if (g_listCount >= 64) {
@@ -152,6 +198,7 @@ void Area::listAppend() {                                          // 0x165 Area
     }
     g_listCursor = g_listCount;
     g_list[g_listCount++] = 0;
+    logSelList("append");
 }
 
 int Area::spriteCount() {
@@ -267,6 +314,11 @@ bool Area::setEnabledByteByTag(int tag, int value) {
         }
         flags = (flags & ~0x0000ff00) | (want << 8);
         changed = true;
+    }
+    if (changed && areaLogOn()) {
+        char why[48];
+        std::snprintf(why, sizeof why, "%s tag=0x%x", value == 0 ? "enable(0x7)" : "disable(0x8)", tag);
+        logAreaNodes(why);
     }
     return changed;
 }
