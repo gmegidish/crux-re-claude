@@ -26,6 +26,7 @@ bool Display::open(const char* title, int scale) {
         SDL_DestroyWindow(window_); window_ = nullptr; headless_ = true; return true;
     }
     SDL_RenderSetLogicalSize(renderer_, Framebuffer::W, Framebuffer::H);
+    SDL_ShowCursor(SDL_DISABLE);   // hide the OS cursor over the window; we draw the game cursor
     texture_ = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888,
                                  SDL_TEXTUREACCESS_STREAMING, Framebuffer::W, Framebuffer::H);
     if (!texture_) {
