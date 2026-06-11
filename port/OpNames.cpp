@@ -126,6 +126,8 @@ const char* rpOpName(int op) {
     case 0x153: return "SET_PIXEL_FROM_REG";
     case 0x154: return "IF_NOT_AT_NODE_SKIP";
     case 0x156: return "ANIM_GET_CURRENT_FRAME";
+    case 0x157: return "BANI_NOOP";
+    case 0x158: return "NOP";
     case 0x159: return "ANIM_SET_COMPLETION_CB";
     case 0x15a: return "ANIM_CLEAR_COMPLETION_CB";
     case 0x15b: return "REG_ADD_IMM";

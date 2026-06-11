@@ -152,12 +152,13 @@ static const int kHeadlessRestartCap = 1000;
 // guard stops a callback's own pumpFrame() from re-draining (the outer loop continues).
 void RunProg::dispatchAnimCallbacks() {
     if (dispatchingCb_ || scene_ == nullptr) { return; }
-    // GATED OFF by default. Auto-running anim completion-callback / timer programs makes
-    // anims that should play once re-trigger themselves (endless loop) and runs palette
-    // sub-scripts that corrupt the room palette — the engine handles these with state the
-    // port doesn't model yet. Drain the queues so they don't grow, but only RUN the
-    // programs with RP_FIRE_CALLBACKS=1, for when that state is faithful.
-    static const bool fire = std::getenv("RP_FIRE_CALLBACKS") != nullptr;
+    // Run the anim completion-callback / timer programs. These are how looping anims stop:
+    // e.g. menu prog26 loads OPRBDFFL looping and arms a completion callback (0x159 -> prog43)
+    // that FREEZEs it (0x13c) and schedules a re-trigger timer (0x178) — so it plays once,
+    // freezes, and re-fires periodically. This was gated off while 0x13c's "_THIS" resolution
+    // was broken (the freeze missed -> anims looped forever) and before the palette fixes;
+    // with those in, firing is correct. Set RP_NO_FIRE_CALLBACKS=1 to drain without running.
+    static const bool fire = std::getenv("RP_NO_FIRE_CALLBACKS") == nullptr;
     dispatchingCb_ = true;
     int prog;
     while ((prog = Anim::takeFiredCallback()) >= 0) {
