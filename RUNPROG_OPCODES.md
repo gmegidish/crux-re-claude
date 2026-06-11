@@ -181,6 +181,8 @@ opcode count is **~390**; the address space is sparse with large reserved gaps
 | 0x153 | SET_PIXEL_FROM_REG | Write pixel using `var[reg]` as colour; flush |
 | 0x154 | IF_NOT_AT_NODE_SKIP | Skip block if pathfind node at (x,y) != `g_nMovDestNode` |
 | 0x156 | ANIM_GET_CURRENT_FRAME | Current frame of stani slot → `var[reg]` |
+| 0x157 | BANI_NOOP | `Bani_Noop(areaCache[a0])` — `Bani_Noop` (0x00417df0) is an empty stub, so this is a no-op |
+| 0x158 | NOP | No-op — the engine's case body is empty (shares the handler with 0x1fd) |
 | 0x159 | ANIM_SET_COMPLETION_CB | Set completion callback to current prog + target |
 | 0x15a | ANIM_CLEAR_COMPLETION_CB | Clear completion callback |
 | 0x15b | REG_ADD_IMM | `var[reg] += imm` |

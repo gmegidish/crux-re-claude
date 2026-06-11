@@ -39,21 +39,12 @@ bool playScmByName(ResArchive& arc, Display& disp, Framebuffer& fb, const char* 
     // we render flat-out, so queued audio would have no relation to the visuals.
     const bool wantAudio = disp.isRealtime() && Audio::isOpen();
     int audioChunks = 0; size_t audioBytes = 0;
-    // The engine streams SCM audio CONTINUOUSLY across back-to-back clips — the intro is a
-    // narration over quick video cuts (e.g. the 0.5s VVKBLACK clip carries ~27s of audio that
-    // must keep playing into the following clips). So only flush when this is the START of a
-    // fresh sequence — i.e. nothing is still playing on the SCM channels. If a previous clip's
-    // audio is still draining, this clip is a continuation and we append to it instead of
-    // cutting it. (Was: always reset, which silenced everything after the first clip.)
-    const bool stillPlaying = Audio::queuedSamples(Audio::MUSIC)  > 0 ||
-                              Audio::queuedSamples(Audio::VOICE0) > 0 ||
-                              Audio::queuedSamples(Audio::VOICE1) > 0 ||
-                              Audio::queuedSamples(Audio::VOICE2) > 0;
-    if (wantAudio && !stillPlaying) Audio::reset();
+    if (wantAudio) Audio::reset();   // start clean (the previous clip already drained + reset)
     const Uint32 startTicks = SDL_GetTicks();
 
     std::string subtitle;   // current subtitle (CP1255), set by 0x1000 cues, drawn each frame
     Framebuffer composite;  // scratch: video frame + subtitle overlay (keeps fb clean)
+    bool skipped = false;   // user skipped → cut immediately, don't wait for the audio tail
 
     for (size_t f = 0; f < scm.frames(); ++f) {
         const auto& fr = scm.frame(f);
@@ -112,7 +103,7 @@ bool playScmByName(ResArchive& arc, Display& disp, Framebuffer& fb, const char* 
         if (!disp.isHeadless()) {
             PumpResult pr = disp.pump();
             if (pr == PumpResult::Quit) return false;    // window closed → quit program
-            if (pr == PumpResult::Skip) break;           // key/click → skip this video
+            if (pr == PumpResult::Skip) { skipped = true; break; }   // key/click → skip this video
             if (disp.isRealtime()) {
                 // Pace to a wall-clock target so video stays locked to the audio
                 // (which plays at its own real-time rate), instead of drifting by
@@ -124,8 +115,19 @@ bool playScmByName(ResArchive& arc, Display& disp, Framebuffer& fb, const char* 
         }
     }
     Log::info("SCM %s: queued %d audio chunk(s), %zu bytes", name, audioChunks, audioBytes);
-    // Do NOT flush here: a following clip in the same sequence keeps playing this clip's
-    // audio (see the continuation check above). The SCM audio is flushed when control reaches
-    // an interactive screen (runScene), mirroring the engine stopping the player on exit.
+    // A clip's audio can be much longer than its video (e.g. VVKBLACK: 0.5s video / ~27s of
+    // narration). Hold on the last frame until this clip's audio finishes before moving on,
+    // so the next clip doesn't cut or overlap it. Then flush so the next clip starts clean.
+    // (A skipped clip cuts immediately — no tail.)
+    if (wantAudio && !skipped) {
+        while (Audio::queuedSamples(Audio::MUSIC)  > 0 || Audio::queuedSamples(Audio::VOICE0) > 0 ||
+               Audio::queuedSamples(Audio::VOICE1) > 0 || Audio::queuedSamples(Audio::VOICE2) > 0) {
+            PumpResult pr = disp.pump();
+            if (pr == PumpResult::Quit) return false;
+            if (pr == PumpResult::Skip) break;             // user skips the audio tail too
+            SDL_Delay(33);
+        }
+    }
+    if (wantAudio) Audio::reset();   // clip + its audio done → clean slate for the next clip
     return true;
 }
