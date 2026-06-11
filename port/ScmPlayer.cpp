@@ -38,6 +38,9 @@ bool playScmByName(ResArchive& arc, Display& disp, Framebuffer& fb, const char* 
     // Audio only when we're pacing to real time (a real window). In turbo/headless
     // we render flat-out, so queued audio would have no relation to the visuals.
     const bool wantAudio = disp.isRealtime() && Audio::isOpen();
+    Log::info("SCM %s: wantAudio=%d (realtime=%d audioOpen=%d)", name,
+              (int)wantAudio, (int)disp.isRealtime(), (int)Audio::isOpen());
+    int audioChunks = 0; size_t audioBytes = 0;
     if (wantAudio) Audio::reset();   // flush the previous logo's audio
     const Uint32 startTicks = SDL_GetTicks();
 
@@ -54,8 +57,10 @@ bool playScmByName(ResArchive& arc, Display& disp, Framebuffer& fb, const char* 
             const int fmt = ch.param >> 8;
             if (ch.type == Scm::PALETTE)    applyPalette(fb, d, ch.size);
             else if (ch.type == Scm::VIDEO) decodeSprite(d, ch.size, fb);
-            else if (wantAudio && ch.type >= 0x40 && ch.type <= 0x43)
+            else if (wantAudio && ch.type >= 0x40 && ch.type <= 0x43) {
                 Audio::queue(Audio::MUSIC, d, ch.size, fmt);   // music
+                ++audioChunks; audioBytes += ch.size;
+            }
             else if (wantAudio && ch.type >= 0x80 && ch.type <= 0x83) {
                 // Bunch-audio voices are CONCURRENT: the engine plays each on its own
                 // mixer channel (id = chunk param low byte, 0..2), summed. Routing
@@ -63,6 +68,7 @@ bool playScmByName(ResArchive& arc, Display& disp, Framebuffer& fb, const char* 
                 int voice = ch.param & 0xff;
                 if (voice > 2) { voice = 2; }
                 Audio::queue(Audio::VOICE0 + voice, d, ch.size, fmt);
+                ++audioChunks; audioBytes += ch.size;
             }
             else if (ch.type == Scm::TEXT) {
                 // Subtitle cue: payload starts with a NUL-terminated SENTENCE.BIN key
@@ -109,6 +115,7 @@ bool playScmByName(ResArchive& arc, Display& disp, Framebuffer& fb, const char* 
             }
         }
     }
+    Log::info("SCM %s: queued %d audio chunk(s), %zu bytes", name, audioChunks, audioBytes);
     // The engine stops SCM playback when the video frames end (Player_ScmInit),
     // so audio must not bleed past the video into whatever comes next.
     if (wantAudio) Audio::reset();

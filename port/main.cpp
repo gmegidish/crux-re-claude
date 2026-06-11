@@ -837,6 +837,18 @@ int main(int argc, char** argv) {
     // the next area. Starts at "entry" (the bootstrap that branches to "menu",
     // where the startup logos play). The variable file persists across areas.
     RunProg vm(arc, disp, fb);
+
+    // --- NOT IN THE ORIGINAL ENGINE ---
+    // Seed the master-volume script variable to full. In the original, the option vars are
+    // never set by a script or a default; var 0x32 is master volume, applied by op 0x84d
+    // (MIXER_SET_MASTER_VOL) which mutes when the var is 0. The engine only ever restores it
+    // from a saved game (Files_LoadGameFull) — there is no shipped default and "new game"
+    // doesn't load a save, so on a truly fresh profile the original also starts muted until
+    // the player sets volume in Options and it persists. We have no save/load and no Options
+    // screen yet, so we default var 0x32 to 10 (== full: op 0x84d computes (10-10)*300 = 0 mB
+    // of attenuation) so SCM speech/music isn't silenced. Remove this once save/load lands.
+    vm.setVar(0x32, 10);
+
     // START_AREA jumps straight to a named area (skips the intro chain) — handy
     // for headless diagnostics like AREA_PNG.
     std::string area = "entry";

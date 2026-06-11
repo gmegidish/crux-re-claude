@@ -123,6 +123,7 @@ void setMasterVolumeMillibels(int mb) {
     if (mb > 0) { mb = 0; }
     if (mb < -10000) { mb = -10000; }
     g_masterGain = std::pow(10.0f, (float)mb / 2000.0f);   // hundredths-of-dB -> linear
+    Log::info("Audio: master volume %d mB -> gain %.3f%s", mb, g_masterGain, g_masterGain <= 0.0f ? " (MUTED)" : "");
 }
 
 void setChannelGain(int channel, float gain) {

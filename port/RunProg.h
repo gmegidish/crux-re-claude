@@ -78,6 +78,7 @@ public:
     // to read the game's own "in options sub-screen" flag (var 0x28: prog26 sets 1, prog59
     // clears it) so the flower hotspots are suppressed while options is up.
     int varValue(int i) { return var(i); }
+    void setVar(int i, int v) { var(i) = v; }
 
     // Run any anim completion callbacks that fired this frame (ops 0x3c/0x159/0x167/0x185).
     // Called after each Anim::tick() (render loop + pumpFrame). Re-entrancy-guarded.
