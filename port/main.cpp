@@ -334,17 +334,20 @@ static void dumpCursorSheet(ResArchive& arc, Framebuffer& fb, const char* path) 
     Palette::load(arc, fb, "MENU", /*nonBlackOnly*/false);
     Palette::load(arc, fb, "GENERAL", /*nonBlackOnly*/true);
 
-    // EVERY type-2 sprite is a possible mouse cursor: the 8 UI cursors (CS*/CURS*) plus the
-    // ~1900 held-item cursors (picking up an item makes it the cursor). All are single-frame.
-    // CURSOR_FILTER=<substr> narrows by name (case-insensitive), e.g. CURSOR_FILTER=CURS.
+    // CURSOR_TYPE selects the archive type: 2 = held-item / UI cursors (all single-frame,
+    // ~1939), 7 = ANIMATIONS (multi-frame). The engine prefers a type-7 over a type-2 for a
+    // cursor (Curs_LoadCursorSelect), so animated cursors — opening/closing doors, etc. —
+    // live in type-7. CURSOR_FILTER=<substr> narrows by name (case-insensitive).
+    int type = 2;
+    if (const char* ct = std::getenv("CURSOR_TYPE")) { type = std::atoi(ct); }
     const char* filt = std::getenv("CURSOR_FILTER");
     std::string fup;
     if (filt) { for (const char* c = filt; *c; ++c) { fup += (char)toupper((unsigned char)*c); } }
 
-    std::vector<std::pair<std::string, CurFrame>> cursors;
-    int maxW = 1, maxH = 1;
+    std::vector<std::pair<std::string, std::vector<CurFrame>>> cursors;   // all frames each
+    int maxW = 1, maxH = 1, maxFrames = 1;
     for (const auto& en : arc.entries()) {
-        if (en.type != 2) { continue; }
+        if (en.type != type) { continue; }
         if (!fup.empty()) {
             std::string up = en.name;
             for (char& c : up) { c = (char)toupper((unsigned char)c); }
@@ -355,85 +358,108 @@ static void dumpCursorSheet(ResArchive& arc, Framebuffer& fb, const char* path) 
         const uint8_t* d = data.data();
         int frameCount = (int)rd32(d + 8);
         if (frameCount < 1) { continue; }
-        size_t blobStart = 12 + (size_t)frameCount * 8;
-        if (blobStart > data.size()) { continue; }
-        int32_t fsz = (int32_t)rd32(d + 12 + 4);                    // frame-0 size
-        if (fsz < 0 || blobStart + (size_t)fsz > data.size()) { continue; }
-        CurFrame f = renderCursorFrame(fb, d + blobStart, (size_t)fsz);
-        maxW = std::max(maxW, f.w); maxH = std::max(maxH, f.h);
-        cursors.emplace_back(en.name, std::move(f));
+        size_t off = 12 + (size_t)frameCount * 8;
+        if (off > data.size()) { continue; }
+        std::vector<CurFrame> frames;
+        for (int i = 0; i < frameCount; ++i) {
+            int32_t fsz = (int32_t)rd32(d + 12 + (size_t)i * 8 + 4);
+            if (fsz < 0 || off + (size_t)fsz > data.size()) { break; }
+            CurFrame f = renderCursorFrame(fb, d + off, (size_t)fsz);
+            maxW = std::max(maxW, f.w); maxH = std::max(maxH, f.h);
+            frames.push_back(std::move(f));
+            off += (size_t)fsz;
+        }
+        if (frames.empty()) { continue; }
+        maxFrames = std::max(maxFrames, (int)frames.size());
+        cursors.emplace_back(en.name, std::move(frames));
     }
-    if (cursors.empty()) { Log::error("CURSOR_SHEET: no cursors found"); return; }
+    if (cursors.empty()) { Log::error("CURSOR_SHEET: no type-%d cursors found", type); return; }
 
-    // Archive order groups by room/state, so identical items scatter. Sort by name so the
-    // same icon (e.g. every MUSHROOM / BOTTLE instance) sits together.
+    // Archive order groups by room/state, so identical items scatter. Sort by name.
     std::sort(cursors.begin(), cursors.end(), [](const auto& a, const auto& b) {
         int c = strcasecmp(a.first.c_str(), b.first.c_str());
         return c != 0 ? c < 0 : a.first < b.first;
     });
 
-    // CURSOR_DEDUP=1: collapse cursors that render to identical pixels (the same icon
-    // re-stored per room) into one cell, for a clean unique-sprite catalogue.
+    // CURSOR_DEDUP=1: collapse entries that render to identical pixels (the same sprite
+    // re-stored per room) for a clean unique catalogue.
     if (std::getenv("CURSOR_DEDUP")) {
         std::unordered_set<uint64_t> seen;
-        std::vector<std::pair<std::string, CurFrame>> uniq;
+        std::vector<std::pair<std::string, std::vector<CurFrame>>> uniq;
         for (auto& cu : cursors) {
-            const CurFrame& f = cu.second;
             uint64_t h = 1469598103934665603ULL;
             auto mix = [&](const void* p, size_t n) {
                 const uint8_t* b = (const uint8_t*)p;
                 for (size_t k = 0; k < n; ++k) { h = (h ^ b[k]) * 1099511628211ULL; }
             };
-            mix(&f.w, sizeof f.w); mix(&f.h, sizeof f.h);
-            mix(f.rgb.data(), f.rgb.size()); mix(f.opaque.data(), f.opaque.size());
+            for (const CurFrame& f : cu.second) {
+                mix(&f.w, sizeof f.w); mix(&f.h, sizeof f.h);
+                mix(f.rgb.data(), f.rgb.size()); mix(f.opaque.data(), f.opaque.size());
+            }
             if (seen.insert(h).second) { uniq.push_back(std::move(cu)); }
         }
-        Log::info("CURSOR_SHEET: dedup %d -> %d unique sprites", (int)cursors.size(), (int)uniq.size());
+        Log::info("CURSOR_SHEET: dedup %d -> %d unique", (int)cursors.size(), (int)uniq.size());
         cursors.swap(uniq);
     }
 
-    // Packed grid, one cell per cursor. CURSOR_COLS sets the width (default 32).
-    int cols = 32;
-    if (const char* cc = std::getenv("CURSOR_COLS")) { cols = std::max(1, std::atoi(cc)); }
-    cols = std::min(cols, (int)cursors.size());
     const int pad = 3, labelH = 8, cellW = maxW + 2 * pad, cellH = maxH + 2 * pad + labelH;
-    const int rows = ((int)cursors.size() + cols - 1) / cols;
-    const int sheetW = cols * cellW, sheetH = rows * cellH;
+    const bool multi = maxFrames > 1;   // animations: one row per cursor, one column per frame
+
+    // Single-frame (type-2): packed grid, CURSOR_COLS wide. Multi-frame (type-7): one row per
+    // cursor with its frames across the columns (capped at CURSOR_MAXCOLS, default 64).
+    int gridCols = 32;
+    if (const char* cc = std::getenv("CURSOR_COLS")) { gridCols = std::max(1, std::atoi(cc)); }
+    int maxCols = 64;
+    if (const char* mc = std::getenv("CURSOR_MAXCOLS")) { maxCols = std::max(1, std::atoi(mc)); }
+    const int labelW = multi ? 44 : 0;
+    const int cols = multi ? std::min(maxFrames, maxCols) : std::min(gridCols, (int)cursors.size());
+    const int rows = multi ? (int)cursors.size() : ((int)cursors.size() + cols - 1) / cols;
+    const int sheetW = labelW + cols * cellW, sheetH = rows * cellH;
     std::vector<uint8_t> img((size_t)sheetW * sheetH * 3);
     auto px = [&](int x, int y, uint8_t r, uint8_t g, uint8_t b) {
         if (x < 0 || x >= sheetW || y < 0 || y >= sheetH) { return; }
         uint8_t* p = img.data() + ((size_t)y * sheetW + x) * 3; p[0] = r; p[1] = g; p[2] = b;
     };
-    // Checkerboard background so transparent cursor pixels are obvious.
     for (int y = 0; y < sheetH; ++y) {
         for (int x = 0; x < sheetW; ++x) { uint8_t v = (((x >> 3) ^ (y >> 3)) & 1) ? 70 : 50; px(x, y, v, v, v); }
     }
-    for (size_t i = 0; i < cursors.size(); ++i) {
-        int ox = ((int)i % cols) * cellW, oy = ((int)i / cols) * cellH;
-        for (int x = 0; x < cellW; ++x) { px(ox + x, oy, 90, 90, 90); }   // cell borders
-        for (int y = 0; y < cellH; ++y) { px(ox, oy + y, 90, 90, 90); }
-        drawNumberSheet(img.data(), sheetW, sheetH, ox + 1, oy + 1, (int)i, 255, 255, 0);
-        const CurFrame& f = cursors[i].second;
-        // Centre each icon in its (uniform, max-sized) cell so small icons aren't pinned to
-        // the corner with all the slack on one side.
-        int fx = ox + (cellW - f.w) / 2;
-        int fy = oy + labelH + (cellH - labelH - f.h) / 2;
+    auto drawIcon = [&](int ox, int oy, int innerTop, const CurFrame& f) {
+        int fx = ox + (cellW - f.w) / 2, fy = oy + innerTop + (cellH - innerTop - f.h) / 2;
         for (int y = 0; y < f.h; ++y) {
             for (int x = 0; x < f.w; ++x) {
                 size_t di = (size_t)y * f.w + x;
                 if (f.opaque[di]) { px(fx + x, fy + y, f.rgb[di*3], f.rgb[di*3+1], f.rgb[di*3+2]); }
             }
         }
+    };
+    for (size_t i = 0; i < cursors.size(); ++i) {
+        if (multi) {
+            int oy = (int)i * cellH;
+            for (int x = 0; x < sheetW; ++x) { px(x, oy, 90, 90, 90); }          // row separator
+            drawNumberSheet(img.data(), sheetW, sheetH, 2, oy + cellH / 2 - 3, (int)i, 255, 255, 0);
+            const auto& frames = cursors[i].second;
+            for (int c = 0; c < cols && c < (int)frames.size(); ++c) {
+                drawIcon(labelW + c * cellW, oy, 0, frames[c]);
+            }
+        } else {
+            int ox = ((int)i % cols) * cellW, oy = ((int)i / cols) * cellH;
+            for (int x = 0; x < cellW; ++x) { px(ox + x, oy, 90, 90, 90); }
+            for (int y = 0; y < cellH; ++y) { px(ox, oy + y, 90, 90, 90); }
+            drawNumberSheet(img.data(), sheetW, sheetH, ox + 1, oy + 1, (int)i, 255, 255, 0);
+            drawIcon(ox, oy, labelH, cursors[i].second[0]);
+        }
     }
-    // Sidecar index->name map (too many cursors to log each to the console).
+    // Sidecar index -> name (+ frame count) map.
     std::string mapPath = std::string(path) + ".txt";
     if (FILE* mf = std::fopen(mapPath.c_str(), "w")) {
-        for (size_t i = 0; i < cursors.size(); ++i) { std::fprintf(mf, "%zu\t%s\n", i, cursors[i].first.c_str()); }
+        for (size_t i = 0; i < cursors.size(); ++i) {
+            std::fprintf(mf, "%zu\t%s\t%dframe(s)\n", i, cursors[i].first.c_str(), (int)cursors[i].second.size());
+        }
         std::fclose(mf);
     }
     if (stbi_write_png(path, sheetW, sheetH, 3, img.data(), sheetW * 3)) {
-        Log::info("wrote cursor sheet: %s (%dx%d, %d cursors, %d cols) + index map %s",
-                  path, sheetW, sheetH, (int)cursors.size(), cols, mapPath.c_str());
+        Log::info("wrote cursor sheet: %s (%dx%d, type-%d, %d cursors, maxFrames=%d) + map %s",
+                  path, sheetW, sheetH, type, (int)cursors.size(), maxFrames, mapPath.c_str());
     } else {
         Log::error("failed to write cursor sheet: %s", path);
     }
@@ -528,9 +554,10 @@ static std::vector<uint8_t> loadAreaVisuals(Scene& scene, RunProg& vm, Framebuff
     Cursor::load(arc, "CSDEF");                          // default arrow
     Cursor::loadMode(arc, 0, "CURSAREA");                // generic clickable area
     Cursor::loadMode(arc, 8, "CURSAREA");
-    Cursor::loadMode(arc, 2, "CSEXIT");                  // exit / doorway (engine name CURSEXIT absent)
+    Cursor::loadMode(arc, 2, "CURSEXIT");                // exit / doorway — type-7, a 10-frame
+                                                         // opening/closing door animation
     Cursor::loadMode(arc, 3, "CURSINV");                 // inventory
-    Cursor::loadMode(arc, 9, "CURSHOUR");                // wait / hourglass
+    Cursor::loadMode(arc, 9, "CURSHOUR");                // wait / hourglass (type-7, 13-frame)
 
     fb.clear(0);
     Anim::blitResourceFrame0(arc, fb, areaName.c_str(), 6, 0, 0);      // area backdrop
