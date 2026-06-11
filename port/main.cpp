@@ -881,7 +881,10 @@ int main(int argc, char** argv) {
 
         std::string next = vm.nextArea();
         if (next.empty()) {
-            // No transition requested → this area is interactive (e.g. the menu).
+            // No transition requested → this area is interactive (e.g. the menu). The SCM
+            // intro/logo audio streams across clips and is stopped here, when we reach an
+            // interactive screen (the engine stops the player on exit to interactive mode).
+            Audio::reset();
             // The lifecycle may have played startup SCMs that left their own palette in
             // place (the menu logos do), so re-apply the area palette before the loop.
             // (vvi2-style intros transition away and never reach here, so they keep the

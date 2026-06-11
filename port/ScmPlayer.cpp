@@ -38,10 +38,18 @@ bool playScmByName(ResArchive& arc, Display& disp, Framebuffer& fb, const char* 
     // Audio only when we're pacing to real time (a real window). In turbo/headless
     // we render flat-out, so queued audio would have no relation to the visuals.
     const bool wantAudio = disp.isRealtime() && Audio::isOpen();
-    Log::info("SCM %s: wantAudio=%d (realtime=%d audioOpen=%d)", name,
-              (int)wantAudio, (int)disp.isRealtime(), (int)Audio::isOpen());
     int audioChunks = 0; size_t audioBytes = 0;
-    if (wantAudio) Audio::reset();   // flush the previous logo's audio
+    // The engine streams SCM audio CONTINUOUSLY across back-to-back clips — the intro is a
+    // narration over quick video cuts (e.g. the 0.5s VVKBLACK clip carries ~27s of audio that
+    // must keep playing into the following clips). So only flush when this is the START of a
+    // fresh sequence — i.e. nothing is still playing on the SCM channels. If a previous clip's
+    // audio is still draining, this clip is a continuation and we append to it instead of
+    // cutting it. (Was: always reset, which silenced everything after the first clip.)
+    const bool stillPlaying = Audio::queuedSamples(Audio::MUSIC)  > 0 ||
+                              Audio::queuedSamples(Audio::VOICE0) > 0 ||
+                              Audio::queuedSamples(Audio::VOICE1) > 0 ||
+                              Audio::queuedSamples(Audio::VOICE2) > 0;
+    if (wantAudio && !stillPlaying) Audio::reset();
     const Uint32 startTicks = SDL_GetTicks();
 
     std::string subtitle;   // current subtitle (CP1255), set by 0x1000 cues, drawn each frame
@@ -116,8 +124,8 @@ bool playScmByName(ResArchive& arc, Display& disp, Framebuffer& fb, const char* 
         }
     }
     Log::info("SCM %s: queued %d audio chunk(s), %zu bytes", name, audioChunks, audioBytes);
-    // The engine stops SCM playback when the video frames end (Player_ScmInit),
-    // so audio must not bleed past the video into whatever comes next.
-    if (wantAudio) Audio::reset();
+    // Do NOT flush here: a following clip in the same sequence keeps playing this clip's
+    // audio (see the continuation check above). The SCM audio is flushed when control reaches
+    // an interactive screen (runScene), mirroring the engine stopping the player on exit.
     return true;
 }
