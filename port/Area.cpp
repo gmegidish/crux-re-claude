@@ -37,6 +37,11 @@ int g_count = 0;
 struct SpriteLink { int animSlot; int tag; int flags; };
 std::vector<SpriteLink> g_sprites;
 
+// Area-cache hit strips: each {x1,y1,x2,y2,node} traces part of a node's painted clickable
+// shape (the engine's secondary hit list). Used to hit degenerate-bbox nodes (menu flowers).
+struct CacheRec { int x1, y1, x2, y2, node; };
+std::vector<CacheRec> g_cacheRecs;
+
 // Selection list (engine g_anAreaList[64] + count/cursor at 0x00646328..): a small
 // cursor-indexed int list the script builds/iterates via the Area_List* ops
 // (RunProg 0x15e..0x165). Used to accumulate and walk area-query results.
@@ -121,10 +126,49 @@ void Area::load(const uint8_t* records, int count) {
     logAreaNodes("load");
 }
 
+void Area::loadCacheRecords(const uint8_t* records, int count) {
+    g_cacheRecs.clear();
+    if (!records || count <= 0) { return; }
+    g_cacheRecs.reserve(count);
+    for (int i = 0; i < count; ++i) {
+        const uint8_t* p = records + (size_t)i * 0x14;
+        CacheRec c;
+        std::memcpy(&c.x1, p + 0x00, 4);  std::memcpy(&c.y1, p + 0x04, 4);
+        std::memcpy(&c.x2, p + 0x08, 4);  std::memcpy(&c.y2, p + 0x0c, 4);
+        std::memcpy(&c.node, p + 0x10, 4);
+        g_cacheRecs.push_back(c);
+    }
+    Log::info("Area: loaded %d cache hit-strip(s)", (int)g_cacheRecs.size());
+}
+
+bool Area::nodeAnchor(int node, int& x, int& y) {
+    for (const CacheRec& c : g_cacheRecs) {
+        if (c.node == node) { x = (c.x1 + c.x2) / 2; y = (c.y1 + c.y2) / 2; return true; }
+    }
+    if (node >= 0 && node < g_count) {
+        int x1 = recordInt(node, kBboxX1), y1 = recordInt(node, kBboxY1);
+        int x2 = recordInt(node, kBboxX2), y2 = recordInt(node, kBboxY2);
+        if (x2 >= x1 && x2 >= 0) { x = (x1 + x2) / 2; y = (y1 + y2) / 2; return true; }
+    }
+    return false;
+}
+
+int Area::cacheRecordAt(int x, int y) {
+    for (const CacheRec& c : g_cacheRecs) {
+        if (x < c.x1 || x > c.x2 || y < c.y1 || y > c.y2) { continue; }
+        if (c.node < 0 || c.node >= g_count) { continue; }
+        // only a currently hit-testable node (type != 2 && enabled byte 0)
+        if (recordInt(c.node, kType) == kTypeExcluded || enabledByte(c.node) != 0) { continue; }
+        return c.node;
+    }
+    return -1;
+}
+
 void Area::clear() {
     g_records.clear();
     g_count = 0;
     g_sprites.clear();
+    g_cacheRecs.clear();
 }
 
 int Area::findNodeByTag(int tag) {

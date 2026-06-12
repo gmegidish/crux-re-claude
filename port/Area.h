@@ -31,6 +31,20 @@ namespace Area {
 // Pass a null pointer or non-positive count to load nothing.
 void load(const uint8_t* records, int count);
 
+// Load the area-cache hit-strip records (count x 0x14 = {x1,y1,x2,y2,nodeId}). These are
+// per-scanline strips tracing each node's painted clickable shape (the engine's secondary
+// hit list, Ani32). Replaces any prior set; load nothing for a null/zero count.
+void loadCacheRecords(const uint8_t* records, int count);
+
+// The node id of the cache strip covering (x,y) — only if that node is currently
+// hit-testable (type != 2 && enabled). -1 if no strip covers the point. This is how
+// degenerate-bbox nodes (e.g. menu flowers) get hit by their painted shape.
+int  cacheRecordAt(int x, int y);
+
+// A representative interior point of `node` (first cache strip's centre, else the node bbox
+// centre) — for headless hover/click simulation. Returns false if the node has no geometry.
+bool nodeAnchor(int node, int& x, int& y);
+
 // Drop all loaded nodes.
 void clear();
 

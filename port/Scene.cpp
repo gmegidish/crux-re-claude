@@ -90,10 +90,18 @@ bool Scene::load(ResArchive& arc, const char* name) {
         r.skip(bytes);
     }
 
-    // -- area-cache record array (0x14-byte records, skipped) --
+    // -- area-cache record array (0x14-byte records = {x1,y1,x2,y2,nodeId}) — per-scanline
+    //    hit strips tracing each node's painted shape; captured for hit-testing (see Area) --
     int32_t cacheCount = r.i32();
-    if (cacheCount < 0 || cacheCount > 1000) { Log::error("Scene '%s': bad cache count %d", name, cacheCount); return false; }
-    r.skip((size_t)cacheCount * 0x14);
+    if (cacheCount < 0 || cacheCount > 5000) { Log::error("Scene '%s': bad cache count %d", name, cacheCount); return false; }
+    {
+        const size_t bytes = (size_t)cacheCount * 0x14;
+        if (r.need(bytes)) {
+            areaCacheRecords_.assign(r.p, r.p + bytes);
+            areaCacheRecordCount_ = cacheCount;
+        }
+        r.skip(bytes);
+    }
 
     // -- 15-entry cache-slot table (program IDs) --
     for (int i = 0; i < 15; ++i) cacheSlots_[i] = r.i32();

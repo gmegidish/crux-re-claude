@@ -115,63 +115,6 @@ static void verifyArchive(const ResArchive& arc) {
 // ticking suppressed in the engine; late group 8,3,9). cacheSlot==-1 → skipped.
 static const int kLifecycleSlots[] = { 6, 0, 7, 8, 3, 9 };
 
-// A hoverable menu flower: a paired normal anim ("...1") + highlight anim ("...2")
-// drawn at the same spot, plus the normal frame's painted bbox as the hover rect.
-struct MenuButton {
-    int normalSlot;
-    int highlightSlot;
-    int node;            // area-node index (0..5) carrying verb-0 click handler
-    int x, y, w, h;
-};
-
-// Each menu flower is an anim PAIR. Despite the suffixes, "...1" (MN_INT1, ...) is
-// the LIT/glowing sprite and "...2" is the DIM idle sprite — so idle flowers show
-// "...2" and the hovered flower lights up to "...1". The hover rect is the idle
-// flower's painted pixels (whole-flower bbox); the lit sprite starts hidden.
-static std::vector<MenuButton> buildMenuButtons(const Scene& scene) {
-    std::vector<MenuButton> btns;
-    for (int s = 0; s < Anim::MAX_SLOTS; ++s) {
-        if (!Anim::active(s)) { continue; }
-        std::string name = Anim::slotName(s);
-        if (name.empty() || name.back() != '1') { continue; }     // s = the "...1" hover sprite
-        int idle = Anim::findByName((name.substr(0, name.size() - 1) + '2').c_str());
-        if (idle < 0) { continue; }                               // the "...2" sprite (click anim)
-        MenuButton b{};
-        // We only need a hit-rect + node id per flower. Visibility is NOT controlled here any
-        // more — the flowers are loaded frozen (hidden) by prog0 and shown/hidden by their own
-        // verb-4/verb-6 (RESET_FREEZE/FREEZE) handlers, fired by the cursor dispatch below.
-        b.normalSlot    = idle;          // MN_*2 — used for the hit-rect + node link
-        b.highlightSlot = s;             // MN_*1 (unused now; kept for the rect fallback)
-        if (!Anim::frameBounds(b.normalSlot, b.x, b.y, b.w, b.h)) { continue; }
-        b.node = -1;                     // resolved by anim-link below
-        btns.push_back(b);
-    }
-    // Link each flower to the area-node whose verb-0 handler controls that flower's
-    // idle anim (MN_*2). The .SCN node order is NOT the flower add-order — e.g. OPT
-    // is node 4 and EXIT is node 5, but flowers are added EXIT-then-OPT — so we must
-    // match by the anim the handler touches, not by index.
-    for (int node = 0; node < Area::count(); ++node) {
-        const ScriptProgram* p = scene.program(Area::verbHandler(node, 0));
-        if (p == nullptr) { continue; }
-        std::string animNm;
-        for (const ScriptInsn& in : p->insns) {
-            if (in.op == 0x195 || in.op == 0x191 || in.op == 0x13c || in.op == 0x13d) {
-                animNm = scene.animName(in.a0);
-                break;
-            }
-        }
-        if (animNm.empty()) { continue; }
-        for (auto& b : btns) {
-            if (animNm == Anim::slotName(b.normalSlot)) { b.node = node; break; }
-        }
-    }
-    for (size_t i = 0; i < btns.size(); ++i) {
-        Log::info("menu button %zu: idle %s / lit %s -> node %d rect=(%d,%d %dx%d)", i,
-                  Anim::slotName(btns[i].normalSlot), Anim::slotName(btns[i].highlightSlot),
-                  btns[i].node, btns[i].x, btns[i].y, btns[i].w, btns[i].h);
-    }
-    return btns;
-}
 
 // 5x7 bitmap font, digits 0-9 only (MSB = leftmost column of 5).
 static const uint8_t kDigit5x7[10][7] = {
@@ -543,6 +486,7 @@ static std::vector<uint8_t> loadAreaVisuals(Scene& scene, RunProg& vm, Framebuff
     Palette::load(arc, fb, areaName.c_str(), /*nonBlackOnly*/false);   // area palette
     Palette::load(arc, fb, "GENERAL", /*nonBlackOnly*/true);           // UI overlay
     Area::load(scene.areaNodes(), scene.areaNodeCount());
+    Area::loadCacheRecords(scene.areaCacheRecords(), scene.areaCacheRecordCount());
     // The default arrow plus the context cursors the engine maps to area cursor
     // ids (op 0x1004 / CD_CHANGE_MODE_INIT). Missing ones fall back to the arrow.
     Cursor::load(arc, "CSDEF");                          // default arrow
@@ -570,8 +514,6 @@ static std::vector<uint8_t> loadAreaVisuals(Scene& scene, RunProg& vm, Framebuff
 // quit. Headless renders one frame and ends.
 static std::string runScene(Scene& scene, RunProg& vm, Display& disp, Framebuffer& fb,
                             const std::vector<uint8_t>& bgPlate) {
-    std::vector<MenuButton> buttons = buildMenuButtons(scene);
-
     // Optional area-node map: AREA_PNG=<path> dumps a 640x480 PNG of every node's bbox over
     // the (dimmed) backdrop. The lifecycle may have drawn anims into fb, so restore the
     // clean plate first.
@@ -584,16 +526,13 @@ static std::string runScene(Scene& scene, RunProg& vm, Display& disp, Framebuffe
 
     int prevHoverNode = -1;   // node last under the cursor — drives verb-6/verb-4 (leave/enter)
 
-    // The node under (x,y). Static/enabled nodes via Area::hitTest; the menu flowers are
-    // area-nodes 0..5 with a degenerate (-1) bbox, so their hit-rect comes from their linked
-    // anim (buttons), but only while the menu's own screen is up (var 0x28 == 0 — the options
-    // sub-screen swaps the active node set, which the port models by ignoring the flowers).
+    // The node under (x,y): the fine-grained cache hit-strips first (they trace each node's
+    // painted clickable shape — e.g. the menu flowers, whose 0xB0 node bbox is degenerate),
+    // then static node bboxes / LINKFULL sprites. While the options sub-screen is up
+    // (var 0x28 != 0) the menu's flower strips aren't the active set, so they're skipped (the
+    // engine swaps the area context on the OPTIONS sub-screen; the port approximates).
     auto nodeAt = [&](int x, int y) -> int {
-        if (vm.varValue(0x28) == 0) {
-            for (const MenuButton& b : buttons) {
-                if (b.node >= 0 && x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h) { return b.node; }
-            }
-        }
+        if (vm.varValue(0x28) == 0) { int c = Area::cacheRecordAt(x, y); if (c >= 0) { return c; } }
         return Area::hitTest(x, y);
     };
 
@@ -605,16 +544,10 @@ static std::string runScene(Scene& scene, RunProg& vm, Display& disp, Framebuffe
         if (vm.quit()) { return ""; }
         if (!vm.nextArea().empty()) { return vm.nextArea(); }
         int mx = disp.mouseX(), my = disp.mouseY();
-        // Headless: optionally hover a flower (MENU_HOVER=index) to verify the highlight.
+        // Headless: optionally hover an area node (MENU_HOVER=<node>) to verify the highlight.
         if (!disp.isRealtime()) {
             const char* hv = std::getenv("MENU_HOVER");
-            if (hv != nullptr) {
-                int hb = std::atoi(hv);
-                if (hb >= 0 && hb < (int)buttons.size()) {
-                    mx = buttons[hb].x + buttons[hb].w / 2;
-                    my = buttons[hb].y + buttons[hb].h / 2;
-                }
-            }
+            if (hv != nullptr) { Area::nodeAnchor(std::atoi(hv), mx, my); }
         }
 
         // Adv_CursorHandler enter/leave: when the node under the cursor changes, run the OLD
@@ -641,15 +574,13 @@ static std::string runScene(Scene& scene, RunProg& vm, Display& disp, Framebuffe
         // Headless / offscreen "dummy" driver: render one frame and return.
         if (!disp.isRealtime()) {
             if (std::getenv("MENU_DUMP")) { fb.savePPM("menu.ppm"); }
-            // MENU_CLICK=<flower> simulates a left-click on a flower for headless verification.
+            // MENU_CLICK=<node> simulates a left-click (verb 0) on a node for verification.
             const char* clk = std::getenv("MENU_CLICK");
             if (clk != nullptr) {
-                int cb = std::atoi(clk);
-                if (cb >= 0 && cb < (int)buttons.size() && buttons[cb].node >= 0) {
-                    int handler = Area::verbHandler(buttons[cb].node, 0);
-                    Log::info("MENU_CLICK flower %d node %d -> handler %d", cb, buttons[cb].node, handler);
-                    if (handler >= 0) { vm.exec(scene, handler, 0); }
-                }
+                int node = std::atoi(clk);
+                int handler = Area::verbHandler(node, 0);
+                Log::info("MENU_CLICK node %d -> handler %d", node, handler);
+                if (handler >= 0) { vm.exec(scene, handler, 0); }
             }
             return "";
         }

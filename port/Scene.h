@@ -49,6 +49,12 @@ public:
     const uint8_t* areaNodes() const { return areaNodes_.data(); }
     int            areaNodeCount() const { return areaNodeCount_; }
 
+    // Raw area-cache records (count x 0x14 bytes = 5 int32s {x1,y1,x2,y2,nodeId}). These are
+    // per-scanline hit strips that trace a node's painted shape (e.g. the menu flowers, whose
+    // own 0xB0 node bbox is degenerate). The engine indexes them for Area_FindAt; see Area.
+    const uint8_t* areaCacheRecords() const { return areaCacheRecords_.data(); }
+    int            areaCacheRecordCount() const { return areaCacheRecordCount_; }
+
 private:
     static const std::string& at(const std::vector<std::string>& v, int i) {
         static const std::string empty;
@@ -61,4 +67,6 @@ private:
     std::string name_;
     std::vector<uint8_t> areaNodes_;     // raw 0xB0-byte area-node records
     int                  areaNodeCount_ = 0;
+    std::vector<uint8_t> areaCacheRecords_;   // raw 0x14-byte area-cache hit-strip records
+    int                  areaCacheRecordCount_ = 0;
 };
