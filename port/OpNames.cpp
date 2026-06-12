@@ -157,6 +157,7 @@ const char* rpOpName(int op) {
     case 0x17b: return "ANIM_SELECT_SLOT";
     case 0x17c: return "ANIM_DUMP_OR_FREE";
     case 0x17d: return "IF_NOT_CURRENT_SCENE_SKIP";
+    case 0x17e: return "TIMER_ADD_REPEAT";
     case 0x17f: return "PALETTE_FADEIN";
     case 0x180: return "SET_RENDER_PASS";
     case 0x181: return "ANIM_SET_POS_TOPLEFT";
@@ -272,6 +273,7 @@ const char* rpOpName(int op) {
     case 0x9c4: return "GV_OPEN_INVENTORY";
     case 0xc02: return "GRAN_INIT_SLIDER";
     case 0xc1c: return "MOV_INIT_GAME_MODE";
+    case 0x13ba: return "ANIM_ADD_FROZEN";
     case 0x1839: return "ADV_SET_OBJ_PROPERTY";
     case 0x183a: return "ADV_TRIGGER_OBJ_EVENT";
     case 0x183c: return "ADV_RESET_INPUT";

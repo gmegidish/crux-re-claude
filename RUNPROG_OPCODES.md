@@ -212,6 +212,7 @@ opcode count is **~390**; the address space is sparse with large reserved gaps
 | 0x17b | ANIM_SELECT_SLOT | Resolve & select anim slot for deferred use |
 | 0x17c | ANIM_DUMP_OR_FREE | Mark selected slot for dump (or free in fast-forward) |
 | 0x17d | IF_NOT_CURRENT_SCENE_SKIP | Skip block if arg1 != current scene ID |
+| 0x17e | TIMER_ADD_REPEAT | `Timer_AddWithReset(a1, a0)` (@0x0047ea70): repeating timer — run program a0 every a1 ticks (re-arms itself), vs the one-shot 0x178/0x196 |
 | 0x17f | PALETTE_FADEIN | Copy snapshot palette + `SetPal_FadeInFromBlack` |
 | 0x180 | SET_RENDER_PASS | `DAT_004c4c48 = 4` |
 | 0x181 | ANIM_SET_POS_TOPLEFT | Position anim from frame top-left |
@@ -364,6 +365,7 @@ text alignment/mode, a global flag, and screen gamma. Earlier `SND_*` names here
 | 0x9c5–0x9c9 | GRAN_SLIDER_* | Slider pos/max/reset/tick/get |
 | 0xc02 | GRAN_INIT_SLIDER | Initialize slider for object |
 | 0xc1c | MOV_INIT_GAME_MODE | Full game-mode init: reset area, `Mov_InitChar`, register all cursor types, border mode 0 |
+| 0x13ba | ANIM_ADD_FROZEN | `Anim_AddByNum(a0, loop=1, 0)` (joins the open group like 0x19) + `Anim_SetWalkTableBase(a1)` + `SetFrameStep(0)` + `SetCurrentFrame(0)` + `Anim_Freeze` — the frozen-at-frame-0 sibling of 0x19 |
 
 ### Object props & theme/display (0x1839–0x5b23)
 
