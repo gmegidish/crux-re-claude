@@ -133,15 +133,17 @@ static std::vector<MenuButton> buildMenuButtons(const Scene& scene) {
     for (int s = 0; s < Anim::MAX_SLOTS; ++s) {
         if (!Anim::active(s)) { continue; }
         std::string name = Anim::slotName(s);
-        if (name.empty() || name.back() != '1') { continue; }     // s = the lit "...1" sprite
+        if (name.empty() || name.back() != '1') { continue; }     // s = the "...1" hover sprite
         int idle = Anim::findByName((name.substr(0, name.size() - 1) + '2').c_str());
-        if (idle < 0) { continue; }                               // idle = the dim "...2" sprite
+        if (idle < 0) { continue; }                               // the "...2" sprite (click anim)
         MenuButton b{};
-        b.normalSlot    = idle;          // shown by default (dim)
-        b.highlightSlot = s;             // shown on hover (lit/glow)
+        // Both MN_*1 and MN_*2 are BRIGHT overlays; the DIM flower lives in the backdrop.
+        b.normalSlot    = idle;          // MN_*2 — used for the hit-rect + node link, not drawn
+        b.highlightSlot = s;             // MN_*1 — the bright flower, shown only on hover
         if (!Anim::frameBounds(b.normalSlot, b.x, b.y, b.w, b.h)) { continue; }
         b.node = -1;                     // resolved by anim-link below
-        Anim::setVisible(b.highlightSlot, false);     // glow hidden until hovered
+        Anim::setVisible(b.normalSlot,    false);     // dim flower is in the backdrop
+        Anim::setVisible(b.highlightSlot, false);     // bright anim hidden until hovered
         btns.push_back(b);
     }
     // Link each flower to the area-node whose verb-0 handler controls that flower's
@@ -616,12 +618,17 @@ static std::string runScene(Scene& scene, RunProg& vm, Display& disp, Framebuffe
         // puppeteering and hit-testing the flowers entirely. Clicks then fall through to
         // Area::hitTest, which sees the option-widget nodes prog26 enabled via op 0x7.
         const bool inMenu = vm.varValue(0x28) == 0;
-        // Swap normal<->highlight for the hovered flower (menu screen only).
+        // The DIM flowers are painted into the menu BACKDROP; the MN_*1/MN_*2 sprites are
+        // both BRIGHT and are overlays drawn only on hover (the engine's verb-4 "enter"
+        // handler unfreezes the flower anim, verb-6 "leave" re-freezes it). So keep both
+        // overlay anims hidden by default — letting the backdrop's dim flower show — and
+        // reveal only the hovered flower's bright anim. (Was: drew normalSlot always, so
+        // every flower looked permanently lit.)
         int hover = -1;
         if (inMenu) {
             hover = hitMenuButton(buttons, mx, my);
             for (int i = 0; i < (int)buttons.size(); ++i) {
-                Anim::setVisible(buttons[i].normalSlot,    i != hover);
+                Anim::setVisible(buttons[i].normalSlot,    false);
                 Anim::setVisible(buttons[i].highlightSlot, i == hover);
             }
         }
