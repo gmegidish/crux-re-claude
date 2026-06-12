@@ -597,6 +597,25 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
             break;
         }
 
+        // -- ANIM_ADD_POSITIONED (RunProg_Exec @0x00462560 case 0x150): add anim animName(a0)
+        //    looping (Anim_AddByNum(a0,1,0)), walk-table base 0, then position it so its frame
+        //    top-left lands at (a1,a2): SetPosition(slot, a1 - frameTopLeftX, a2 - frameTopLeftY).
+        //    Like 0x19 but pinned to a script-given screen position. --
+        case 0x150: {
+            const std::string& nm = scene_->animName(in.a0);
+            if (!nm.empty()) {
+                int slot = Anim::addByName(arc_, nm.c_str(), /*looping*/true, /*frozen*/false);
+                if (slot >= 0) {
+                    curAnimSlot_ = slot;
+                    Anim::setZBase(slot, 0);
+                    int tx = 0, ty = 0;
+                    Anim::getFrameTopLeft(slot, tx, ty);
+                    Anim::setPosition(slot, in.a1 - tx, in.a2 - ty);
+                }
+            }
+            break;
+        }
+
         // -- STORE_ANIM_SLOT / "STANI" (RunProg_Exec @0x00462560, case 0x3f): select
         //    the anim slot named animName(a0) and stash it in the STANI register
         //    DAT_007c4108 (curAnimSlot_) for later named-anim ops. The engine special-
