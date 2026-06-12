@@ -685,14 +685,15 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
             break;
         }
 
-        // -- FREEZE_ANIM: freeze animName(a0) (or the current "this" slot) at frame a1
-        //    (SetCurrentFrame + stop). The "this" case is the common one: load anim (0x19)
-        //    then freeze "this" — without it the just-loaded anim never stops and loops. --
+        // -- FREEZE_ANIM (engine @0x00462560): Anim_SetFrameStep(slot,0) + Anim_SetCurrentFrame(
+        //    slot,a1). This PAUSES the anim at frame a1 but keeps it DRAWN — it is NOT Anim_Freeze
+        //    (which hides). Used to stop a just-loaded looping anim (0x19) on a chosen frame, e.g.
+        //    the options widgets that play once then rest visible. --
         case 0x13c: {
             const std::string& nm = scene_->animName(in.a0);
             int slot = (isThisSlot(nm.c_str())) ? curAnimSlot_
                                                              : Anim::findByName(nm.c_str());
-            if (slot >= 0) { Anim::setCurrentFrame(slot, in.a1); Anim::freeze(slot); }
+            if (slot >= 0) { Anim::setCurrentFrame(slot, in.a1); Anim::setFrameStep(slot, 0); }
             break;
         }
 
@@ -706,18 +707,18 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
                                                              : Anim::findByName(nm.c_str());
             if (slot >= 0) {
                 Anim::setCurrentFrame(slot, Anim::frameCount(slot) - 1);
-                Anim::freeze(slot);
+                Anim::setFrameStep(slot, 0);   // pause on the last frame (visible), not Anim_Freeze
             }
             break;
         }
 
-        // -- UNFREEZE_ANIM: set the anim's frame-step to play (+ clear trigger frame);
-        //    like 0x195, makes animName(a0) animate again. --
+        // -- UNFREEZE_ANIM (engine 0x13d): Anim_SetFrameStep(slot,1) — resume frame advance.
+        //    NOT Anim_ResetFreeze (that's the visibility unfreeze, op 0x195). --
         case 0x13d: {
             const std::string& nm = scene_->animName(in.a0);
             int slot = (isThisSlot(nm.c_str())) ? curAnimSlot_
                                                              : Anim::findByName(nm.c_str());
-            if (slot >= 0) { Anim::resetFreeze(slot); }
+            if (slot >= 0) { Anim::setFrameStep(slot, 1); }
             break;
         }
 

@@ -137,13 +137,13 @@ static std::vector<MenuButton> buildMenuButtons(const Scene& scene) {
         int idle = Anim::findByName((name.substr(0, name.size() - 1) + '2').c_str());
         if (idle < 0) { continue; }                               // the "...2" sprite (click anim)
         MenuButton b{};
-        // Both MN_*1 and MN_*2 are BRIGHT overlays; the DIM flower lives in the backdrop.
-        b.normalSlot    = idle;          // MN_*2 — used for the hit-rect + node link, not drawn
-        b.highlightSlot = s;             // MN_*1 — the bright flower, shown only on hover
+        // We only need a hit-rect + node id per flower. Visibility is NOT controlled here any
+        // more — the flowers are loaded frozen (hidden) by prog0 and shown/hidden by their own
+        // verb-4/verb-6 (RESET_FREEZE/FREEZE) handlers, fired by the cursor dispatch below.
+        b.normalSlot    = idle;          // MN_*2 — used for the hit-rect + node link
+        b.highlightSlot = s;             // MN_*1 (unused now; kept for the rect fallback)
         if (!Anim::frameBounds(b.normalSlot, b.x, b.y, b.w, b.h)) { continue; }
         b.node = -1;                     // resolved by anim-link below
-        Anim::setVisible(b.normalSlot,    false);     // dim flower is in the backdrop
-        Anim::setVisible(b.highlightSlot, false);     // bright anim hidden until hovered
         btns.push_back(b);
     }
     // Link each flower to the area-node whose verb-0 handler controls that flower's
@@ -171,14 +171,6 @@ static std::vector<MenuButton> buildMenuButtons(const Scene& scene) {
                   btns[i].node, btns[i].x, btns[i].y, btns[i].w, btns[i].h);
     }
     return btns;
-}
-
-static int hitMenuButton(const std::vector<MenuButton>& btns, int mx, int my) {
-    for (int i = 0; i < (int)btns.size(); ++i) {
-        const MenuButton& b = btns[i];
-        if (mx >= b.x && mx < b.x + b.w && my >= b.y && my < b.y + b.h) { return i; }
-    }
-    return -1;
 }
 
 // 5x7 bitmap font, digits 0-9 only (MSB = leftmost column of 5).
@@ -590,6 +582,21 @@ static std::string runScene(Scene& scene, RunProg& vm, Display& disp, Framebuffe
     // Live area overlay: paint the node boxes into every frame (always visible).
     const bool areaOverlay = std::getenv("AREA_OVERLAY") != nullptr;
 
+    int prevHoverNode = -1;   // node last under the cursor — drives verb-6/verb-4 (leave/enter)
+
+    // The node under (x,y). Static/enabled nodes via Area::hitTest; the menu flowers are
+    // area-nodes 0..5 with a degenerate (-1) bbox, so their hit-rect comes from their linked
+    // anim (buttons), but only while the menu's own screen is up (var 0x28 == 0 — the options
+    // sub-screen swaps the active node set, which the port models by ignoring the flowers).
+    auto nodeAt = [&](int x, int y) -> int {
+        if (vm.varValue(0x28) == 0) {
+            for (const MenuButton& b : buttons) {
+                if (b.node >= 0 && x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h) { return b.node; }
+            }
+        }
+        return Area::hitTest(x, y);
+    };
+
     for (;;) {
         Theme::advance();                     // keep room music streaming
         // Advance anims/timers at the engine's ~9fps ([Flow] FPS), not per present frame,
@@ -598,8 +605,7 @@ static std::string runScene(Scene& scene, RunProg& vm, Display& disp, Framebuffe
         if (vm.quit()) { return ""; }
         if (!vm.nextArea().empty()) { return vm.nextArea(); }
         int mx = disp.mouseX(), my = disp.mouseY();
-        // Headless: optionally hover a button (MENU_HOVER=index) to verify the
-        // highlight in the dump.
+        // Headless: optionally hover a flower (MENU_HOVER=index) to verify the highlight.
         if (!disp.isRealtime()) {
             const char* hv = std::getenv("MENU_HOVER");
             if (hv != nullptr) {
@@ -611,67 +617,37 @@ static std::string runScene(Scene& scene, RunProg& vm, Display& disp, Framebuffe
             }
         }
 
-        // The flowers are the menu's clickable hotspots, but they belong to the menu's
-        // top-level screen only. When the options sub-screen is up (the game's own flag
-        // var 0x28 == 1, set by prog26 / cleared by prog59) the menu's area nodes are no
-        // longer the active set — the engine swaps to the OPTIONS context — so we stop
-        // puppeteering and hit-testing the flowers entirely. Clicks then fall through to
-        // Area::hitTest, which sees the option-widget nodes prog26 enabled via op 0x7.
-        const bool inMenu = vm.varValue(0x28) == 0;
-        // The DIM flowers are painted into the menu BACKDROP; the MN_*1/MN_*2 sprites are
-        // both BRIGHT and are overlays drawn only on hover (the engine's verb-4 "enter"
-        // handler unfreezes the flower anim, verb-6 "leave" re-freezes it). So keep both
-        // overlay anims hidden by default — letting the backdrop's dim flower show — and
-        // reveal only the hovered flower's bright anim. (Was: drew normalSlot always, so
-        // every flower looked permanently lit.)
-        int hover = -1;
-        if (inMenu) {
-            hover = hitMenuButton(buttons, mx, my);
-            for (int i = 0; i < (int)buttons.size(); ++i) {
-                Anim::setVisible(buttons[i].normalSlot,    false);
-                Anim::setVisible(buttons[i].highlightSlot, i == hover);
-            }
+        // Adv_CursorHandler enter/leave: when the node under the cursor changes, run the OLD
+        // node's verb-6 (leave) handler then the NEW node's verb-4 (enter) handler. The scene's
+        // OWN scripts then drive the visuals — e.g. a flower's verb-4 RESET_FREEZE shows it,
+        // verb-6 FREEZE hides it. No menu-specific puppeteering here.
+        int hoverNode = nodeAt(mx, my);
+        if (hoverNode != prevHoverNode) {
+            if (prevHoverNode >= 0) { int h = Area::verbHandler(prevHoverNode, 6); if (h >= 0) { vm.exec(scene, h, 0); } }
+            if (hoverNode    >= 0) { int h = Area::verbHandler(hoverNode,    4); if (h >= 0) { vm.exec(scene, h, 0); } }
+            prevHoverNode = hoverNode;
+            if (vm.quit()) { return ""; }
+            if (!vm.nextArea().empty()) { return vm.nextArea(); }
         }
 
         std::memcpy(fb.pixels(), bgPlate.data(), bgPlate.size());   // restore backdrop
-        Anim::drawAll(fb);                                          // flowers (hover-aware)
-        if (areaOverlay) {
-            drawAreaOverlay(fb);                                    // static nodes + LINKFULL sprites
-            // Menu flowers are anim-driven node-0..5 hotspots resolved via buildMenuButtons
-            // (the port's own hack, separate from Area's static bbox / sprite list), so the
-            // real clickable things wouldn't show otherwise. Outline them in magenta.
-            uint8_t magenta = (uint8_t)nearestPaletteIndex(fb, 255, 0, 255);
-            for (const MenuButton& b : buttons) {
-                for (int x = b.x; x <= b.x + b.w; ++x) { putIdx(fb, x, b.y, magenta); putIdx(fb, x, b.y + b.h, magenta); }
-                for (int y = b.y; y <= b.y + b.h; ++y) { putIdx(fb, b.x, y, magenta); putIdx(fb, b.x + b.w, y, magenta); }
-                if (b.node >= 0) { drawNumberIdx(fb, b.x + 2, b.y + 2, b.node, magenta); }
-            }
-        }
+        Anim::drawAll(fb);                                          // scene anims (flowers shown/hidden by their own scripts)
+        if (areaOverlay) { drawAreaOverlay(fb); }                   // static nodes + LINKFULL sprites
 
-        // Cursor reflects the hovered region's cursor id: a hovered menu flower
-        // (its area-node), else the topmost .SCN area-node under the mouse, else
-        // the default arrow.
-        int curMode;
-        if (hover >= 0) {
-            curMode = Area::cursorId(buttons[hover].node);
-        } else {
-            int node = Area::hitTest(mx, my);
-            curMode = (node >= 0) ? Area::cursorId(node) : -1;
-        }
+        int curMode = (hoverNode >= 0) ? Area::cursorId(hoverNode) : -1;
         Cursor::drawMode(fb, curMode, mx, my);
         disp.present(fb);
 
         // Headless / offscreen "dummy" driver: render one frame and return.
         if (!disp.isRealtime()) {
             if (std::getenv("MENU_DUMP")) { fb.savePPM("menu.ppm"); }
-            // MENU_CLICK=<flower> simulates a click for headless verification.
+            // MENU_CLICK=<flower> simulates a left-click on a flower for headless verification.
             const char* clk = std::getenv("MENU_CLICK");
             if (clk != nullptr) {
                 int cb = std::atoi(clk);
-                if (cb >= 0 && cb < (int)buttons.size()) {
+                if (cb >= 0 && cb < (int)buttons.size() && buttons[cb].node >= 0) {
                     int handler = Area::verbHandler(buttons[cb].node, 0);
-                    Log::info("MENU_CLICK flower %d node %d -> handler %d",
-                              cb, buttons[cb].node, handler);
+                    Log::info("MENU_CLICK flower %d node %d -> handler %d", cb, buttons[cb].node, handler);
                     if (handler >= 0) { vm.exec(scene, handler, 0); }
                 }
             }
@@ -682,18 +658,8 @@ static std::string runScene(Scene& scene, RunProg& vm, Display& disp, Framebuffe
 
         int cx, cy, btn;
         if (disp.takeClick(cx, cy, btn)) {
-            // A flower → its area-node verb-0 (click) handler; otherwise fall back
-            // to the bottom-strip nodes' AABB hit-test.
-            int node, verb = 0;
-            int hb = inMenu ? hitMenuButton(buttons, cx, cy) : -1;
-            if (hb >= 0) {
-                node = buttons[hb].node;
-                Log::info("menu click -> flower %d (%s) node %d",
-                          hb, Anim::slotName(buttons[hb].normalSlot), node);
-            } else {
-                node = Area::hitTest(cx, cy);
-                verb = (btn == SDL_BUTTON_RIGHT) ? 1 : 0;       // left=look(0), right=use(1)
-            }
+            int node = nodeAt(cx, cy);
+            int verb = (btn == SDL_BUTTON_RIGHT) ? 1 : 0;          // left=look(0), right=use(1)
             if (node >= 0) {
                 int handler = Area::verbHandler(node, verb);
                 Log::info("click (%d,%d) -> node %d verb %d -> handler %d", cx, cy, node, verb, handler);

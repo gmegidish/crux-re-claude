@@ -17,8 +17,12 @@ struct Frame {
 
 struct Slot {
     bool   active = false;            // slot in use
-    bool   visible = true;            // drawn each frame
-    bool   frozen = false;            // frame advance disabled
+    bool   visible = true;            // legacy show/hide flag (kept; no longer toggled by callers)
+    bool   frozen = false;            // engine freeze count > 0: HIDDEN (not drawn) AND not advanced
+                                      // (Anim_Freeze/0x191, Anim_ResetFreeze/0x195, ADD_FROZEN/0x13ba).
+                                      // Anim_GetCurrentFrame returns -1 when frozen, so the engine skips it.
+    bool   paused = false;            // frame-step 0: NOT advanced but STILL DRAWN (Anim_SetFrameStep/0x197,
+                                      // FREEZE_ANIM/0x13c, and a finished one-shot resting on its last frame).
     bool   looping = false;           // wrap to 0 at the end (else stop on last frame)
     int    curFrame = 0;
     int    x = 0, y = 0;              // slot screen position
@@ -146,7 +150,8 @@ int addByName(ResArchive& arc, const char* name, bool looping, bool frozen) {
     if (!loadAni(arc, name, s)) { s = Slot{}; return -1; }
     s.active = true;
     s.visible = true;
-    s.frozen = frozen;
+    s.frozen = frozen;        // ADD_FROZEN (0x13ba): hidden until shown via verb-4 RESET_FREEZE
+    s.paused = frozen;        // 0x13ba also SetFrameStep(0); harmless for the non-frozen loaders
     s.looping = looping;
     s.curFrame = 0;
     s.stopFrame = -1;
@@ -199,7 +204,7 @@ void tick() {
     tickGroups();
     for (int i = 0; i < MAX_SLOTS; ++i) {
         Slot& s = g_slots[i];
-        if (!s.active || s.frozen || (int)s.frames.size() <= 1) { continue; }
+        if (!s.active || s.frozen || s.paused || (int)s.frames.size() <= 1) { continue; }
         // Grouped member that isn't the active one: hold (not drawn, not advanced).
         if (s.groupId >= 0 && s.groupId < MAX_GROUPS && g_groups[s.groupId].active &&
             g_groups[s.groupId].activeSlot != i) { continue; }
@@ -210,7 +215,7 @@ void tick() {
             s.curFrame = s.stopFrame;
         } else if (s.curFrame >= (int)s.frames.size()) {
             if (s.looping) { s.curFrame = 0; }
-            else { s.curFrame = (int)s.frames.size() - 1; s.frozen = true; }
+            else { s.curFrame = (int)s.frames.size() - 1; s.paused = true; }   // rest on last frame, STILL drawn
             // A grouped member whose anim just ended is released so the group re-rolls.
             if (s.groupId >= 0 && s.groupId < MAX_GROUPS && g_groups[s.groupId].activeSlot == i) {
                 g_groups[s.groupId].activeSlot = -1;
@@ -366,10 +371,11 @@ void slotPos(int slot, int& x, int& y) {
     y = g_slots[slot].y;
 }
 
+// Anim_SetFrameStep(slot, step): 0 pauses auto-advance, nonzero resumes. This is the
+// frame-step gate (paused-but-DRAWN), distinct from the freeze count (frozen=hidden).
 void setFrameStep(int slot, int step) {
     if (slot < 0 || slot >= MAX_SLOTS) { return; }
-    if (step == 0) { g_slots[slot].frozen = true; }
-    else { g_slots[slot].frozen = false; }
+    g_slots[slot].paused = (step == 0);
 }
 
 bool frameBounds(int slot, int& x, int& y, int& w, int& h) {
@@ -412,7 +418,7 @@ void drawAll(Framebuffer& fb) {
     int n = 0;
     for (int i = 0; i < MAX_SLOTS; ++i) {
         const Slot& s = g_slots[i];
-        if (!s.active || !s.visible) { continue; }
+        if (!s.active || !s.visible || s.frozen) { continue; }   // frozen == engine freeze count>0 -> not drawn
         if (s.curFrame < 0 || s.curFrame >= (int)s.frames.size()) { continue; }
         if (s.frames[s.curFrame].blob.empty()) { continue; }
         // A grouped slot is drawn only when it is its group's active member.
