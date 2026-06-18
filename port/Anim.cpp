@@ -208,12 +208,13 @@ void tick() {
         // Grouped member that isn't the active one: hold (not drawn, not advanced).
         if (s.groupId >= 0 && s.groupId < MAX_GROUPS && g_groups[s.groupId].active &&
             g_groups[s.groupId].activeSlot != i) { continue; }
-        // Honor a stop frame: don't advance past it.
-        if (s.stopFrame >= 0 && s.curFrame >= s.stopFrame) { continue; }
         ++s.curFrame;
-        if (s.stopFrame >= 0 && s.curFrame >= s.stopFrame) {
-            s.curFrame = s.stopFrame;
-        } else if (s.curFrame >= (int)s.frames.size()) {
+        // Engine Anim_HandleFrameTick step 5: when the slot reaches its armed stop frame,
+        // CLEAR the stop frame to -1 (this is what makes Anim_IsAtStopFrame true and ends a
+        // WAIT). The slot is not pinned there — it keeps advancing/looping; the script holds
+        // position separately with FREEZE_ANIM if it wants to.
+        const bool reachedStop = (s.stopFrame >= 0 && s.curFrame >= s.stopFrame);
+        if (s.curFrame >= (int)s.frames.size()) {
             if (s.looping) { s.curFrame = 0; }
             else { s.curFrame = (int)s.frames.size() - 1; s.paused = true; }   // rest on last frame, STILL drawn
             // A grouped member whose anim just ended is released so the group re-rolls.
@@ -221,6 +222,7 @@ void tick() {
                 g_groups[s.groupId].activeSlot = -1;
             }
         }
+        if (reachedStop) { s.stopFrame = -1; }
         // Completion callback (ops 0x3c/0x159/0x167/0x185): fire once when the anim reaches
         // its trigger frame, then clear (one-shot). The VM drains g_firedCbs and runs them.
         if (s.completionCb >= 0 && s.triggerFrame >= 0 && s.curFrame >= s.triggerFrame) {
@@ -291,23 +293,33 @@ void setVisible(int slot, bool visible) {
     if (slot >= 0 && slot < MAX_SLOTS) { g_slots[slot].visible = visible; }
 }
 
-// Anim_SetStopFrame @0x004054b0: stash the frame at which the slot halts. (Engine guards
-// on active/group membership; we just require a valid active slot.)
+// Anim_SetStopFrame @0x00405450: arm the frame at which the slot halts. The engine ONLY
+// arms it when the slot is on-screen (flags&2), dump-pending (flags&4), or grouped —
+// otherwise it is a no-op and the stop frame stays -1. That is load-bearing: WAIT_ANIM_END
+// / WAIT_FRAME on a hidden/frozen helper slot must terminate AT ONCE (stopFrame already -1
+// -> Anim_IsAtStopFrame true), not spin forever. Our on-screen proxy is "active and not
+// frozen" (a frozen slot is hidden — Anim_GetCurrentFrame returns -1, it is not drawn);
+// grouped slots also qualify. tick() clears stopFrame back to -1 when the frame is reached.
 void setStopFrame(int slot, int frame) {
     if (slot < 0 || slot >= MAX_SLOTS || !g_slots[slot].active) { return; }
-    int last = (int)g_slots[slot].frames.size() - 1;
-    // Clamp to a reachable frame so a play-to-frame wait can always terminate (the engine
-    // ignores an out-of-range stop frame; clamping is the equivalent safe resting target).
+    Slot& s = g_slots[slot];
+    const bool onScreen = !s.frozen;            // proxy for engine flags&2 (on display list)
+    const bool grouped  = s.groupId >= 0;
+    if (!(onScreen || grouped)) { return; }     // engine no-op -> stopFrame stays -1
+    int last = (int)s.frames.size() - 1;
     if (frame < 0) { frame = -1; }
     else if (frame > last) { frame = last; }
-    g_slots[slot].stopFrame = frame;
+    s.stopFrame = frame;
 }
 
+// Anim_IsAtStopFrame @0x00405610: literally `g_anAnimSlotStopFrame[slot] == -1`. The stop
+// frame is the WAIT terminator — tick() resets it to -1 the moment the slot reaches it, and
+// a freed/reloaded slot also resets to -1, so a wait whose target gets recycled (e.g. a
+// completion callback frees+reloads it as looping) exits instead of hanging. An invalid /
+// inactive slot reports "done" so a stale wait can never hang.
 bool atStopFrame(int slot) {
-    if (slot < 0 || slot >= MAX_SLOTS || !g_slots[slot].active) { return false; }
-    const Slot& s = g_slots[slot];
-    if (s.stopFrame < 0) { return false; }
-    return s.curFrame >= s.stopFrame;
+    if (slot < 0 || slot >= MAX_SLOTS || !g_slots[slot].active) { return true; }
+    return g_slots[slot].stopFrame == -1;
 }
 
 // Anim_SetWalkTableBase @0x00406980: per-slot value that the engine ALSO uses as the
