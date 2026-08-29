@@ -528,15 +528,9 @@ static std::string runScene(Scene& scene, RunProg& vm, Display& disp, Framebuffe
 
     int prevHoverNode = -1;   // node last under the cursor — drives verb-6/verb-4 (leave/enter)
 
-    // The node under (x,y): the fine-grained cache hit-strips first (they trace each node's
-    // painted clickable shape — e.g. the menu flowers, whose 0xB0 node bbox is degenerate),
-    // then static node bboxes / LINKFULL sprites. While the options sub-screen is up
-    // (var 0x28 != 0) the menu's flower strips aren't the active set, so they're skipped (the
-    // engine swaps the area context on the OPTIONS sub-screen; the port approximates).
-    auto nodeAt = [&](int x, int y) -> int {
-        if (vm.varValue(0x28) == 0) { int c = Area::cacheRecordAt(x, y); if (c >= 0) { return c; } }
-        return Area::hitTest(x, y);
-    };
+    // The node under (x,y) — RunProg::nodeAt owns this (pumpFrame draws the cursor with
+    // the same test during blocking ops, so the two must not drift apart).
+    auto nodeAt = [&](int x, int y) -> int { return vm.nodeAt(x, y); };
 
     for (;;) {
         Theme::advance();                     // keep room music streaming

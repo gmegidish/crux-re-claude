@@ -29,6 +29,12 @@ public:
     // Execute program `progId` of `scene` to completion.
     void exec(const Scene& scene, int progId, int nId = 0);
 
+    // Area node under (x,y) — the fine-grained cache hit-strips first, then static node
+    // bboxes / LINKFULL sprites. While the options sub-screen is up (var 0x28 != 0) the
+    // menu's flower strips aren't the active set, so they are skipped. Shared by the
+    // render loop's hover/click dispatch and by pumpFrame's cursor.
+    int nodeAt(int x, int y);
+
     bool quit() const { return quit_; }                  // user closed the window
     const std::string& nextArea() const { return nextArea_; }  // INVCHAIN target ("" = none)
     void clearTransition() { nextArea_.clear(); }
@@ -87,6 +93,11 @@ public:
 private:
 
     bool pumpFrame();                    // op 0x3b: advance/render one paced frame; false = stop
+
+    // Subtitle currently on screen (op 0xcd/0x50). pumpFrame draws it over the composited
+    // frame, so the world keeps running underneath instead of freezing on a snapshot.
+    std::string speechText_;
+    bool        pumpSkipped_ = false;    // a click/key arrived during the last pumpFrame
 
     // Block until `slot` reaches its armed stop frame (ops 0x1f / 0x13b), pumping a
     // frame per iteration. Watchdog: if the wait outlives WAIT_WATCHDOG frames it logs

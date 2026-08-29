@@ -11,6 +11,7 @@
 #include "Sentence.h"
 #include "TextRender.h"
 #include "Area.h"
+#include "Cursor.h"
 #include "Log.h"
 #include <SDL.h>
 #include <vector>
@@ -108,24 +109,22 @@ void RunProg::fadeToBlack(int msPerStep) {
 // Skippable with a click/key; restores the frame afterwards. Realtime only.
 void RunProg::showSpeech(const std::string& cp1255) {
     if (cp1255.empty() || !TextRender::ready() || !disp_.isRealtime()) { return; }
-    const size_t n = (size_t)fb_.width() * fb_.height();
-    std::vector<uint8_t> saved(fb_.pixels(), fb_.pixels() + n);
 
-    TextRender::drawSentence(fb_, cp1255, fb_.width() / 2, fb_.height() - 40);   // bottom-centered
+    // The line is held as an OVERLAY that pumpFrame paints over each composited frame,
+    // rather than freezing a framebuffer snapshot: the engine's SndMem_WaitSpeech keeps
+    // the main tick running while speech plays, so anims animate, music streams and the
+    // cursor tracks the mouse for the whole line.
+    speechText_ = cp1255;
 
     int ms = (int)cp1255.size() * 55;
     if (ms < 1500) { ms = 1500; }
     if (ms > 8000) { ms = 8000; }
     Uint32 start = SDL_GetTicks();
     while (SDL_GetTicks() - start < (Uint32)ms) {
-        disp_.present(fb_);
-        PumpResult pr = disp_.pump();
-        if (pr == PumpResult::Quit) { quit_ = true; break; }
-        if (pr == PumpResult::Skip) { break; }          // click/key skips the line
-        SDL_Delay(33);
+        if (!pumpFrame()) { break; }                 // quit / area change
+        if (pumpSkipped_) { break; }                 // click/key skips the line
     }
-    std::memcpy(fb_.pixels(), saved.data(), n);          // remove the subtitle
-    disp_.present(fb_);
+    speechText_.clear();
 }
 
 // Per-restart frame budget for op 0x3b in headless / non-realtime runs. The
@@ -199,6 +198,14 @@ void RunProg::waitForStopFrame(int slot, int progId, int pc, int op) {
     }
 }
 
+int RunProg::nodeAt(int x, int y) {
+    if (varValue(0x28) == 0) {
+        int c = Area::cacheRecordAt(x, y);
+        if (c >= 0) { return c; }
+    }
+    return Area::hitTest(x, y);
+}
+
 bool RunProg::pumpFrame() {
     // Advance the world (anims/timers) at the engine's ~9fps, not every present frame.
     if (animFrameDue()) {
@@ -214,10 +221,24 @@ bool RunProg::pumpFrame() {
         std::memcpy(fb_.pixels(), bg_.data(), bg_.size());
     }
     Anim::drawAll(fb_);
+    // Subtitle overlay (a speech line being held by showSpeech), then the cursor at the
+    // LIVE mouse position — drawn here as well as in the render loop so it keeps tracking
+    // during every blocking op (speech, WAIT_ANIM_END, slider drags) instead of showing
+    // whatever was baked into the frame when the wait began.
+    if (!speechText_.empty()) {
+        TextRender::drawSentence(fb_, speechText_, fb_.width() / 2, fb_.height() - 40);
+    }
+    if (disp_.isRealtime()) {
+        const int mx = disp_.mouseX(), my = disp_.mouseY();
+        const int node = nodeAt(mx, my);
+        Cursor::drawMode(fb_, node >= 0 ? Area::cursorId(node) : -1, mx, my);
+    }
     disp_.present(fb_);
+    pumpSkipped_ = false;
     if (disp_.isRealtime()) {
         PumpResult pr = disp_.pump();
         if (pr == PumpResult::Quit) { quit_ = true; }
+        if (pr == PumpResult::Skip) { pumpSkipped_ = true; }
         SDL_Delay(33);
     }
     if (quit_) { return false; }
