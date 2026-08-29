@@ -22,6 +22,10 @@ static void applyPalette(Framebuffer& fb, const uint8_t* d, uint32_t size) {
 }
 
 bool playScmByName(ResArchive& arc, Display& disp, Framebuffer& fb, const char* name) {
+    // SKIP_VIDEOS=1: pretend the video played and completed (scripts continue as normal).
+    static const bool skip = std::getenv("SKIP_VIDEOS") != nullptr;
+    if (skip) { Log::info("SKIP_VIDEOS: skipping SCM '%s'", name); return true; }
+
     // Resolve the type-16 entry (names repeat across types).
     const ResEntry* e = nullptr;
     for (const auto& en : arc.entries())

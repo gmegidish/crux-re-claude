@@ -2,6 +2,7 @@
 #include "HelpBlit.h"
 #include "Log.h"
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <strings.h>
@@ -113,6 +114,31 @@ bool loadAni(ResArchive& arc, const char* name, Slot& s) {
 
 namespace Anim {
 
+// --- diagnostics (ANIM_LOG=1) -------------------------------------------------
+// Slot state is invisible from the outside, which makes a stuck WAIT_ANIM_END /
+// WAIT_FRAME impossible to diagnose from a log. debugSlot() renders one slot's
+// full state; animLog() traces every mutation that can strand a wait.
+const char* debugSlot(int slot) {
+    static char buf[192];
+    if (slot < 0 || slot >= MAX_SLOTS) { std::snprintf(buf, sizeof(buf), "slot %d <out of range>", slot); return buf; }
+    const Slot& s = g_slots[slot];
+    if (!s.active) { std::snprintf(buf, sizeof(buf), "slot %d <inactive>", slot); return buf; }
+    std::snprintf(buf, sizeof(buf),
+                  "slot %d '%s' frame=%d/%zu stop=%d freeze=%d paused=%d loop=%d group=%d vis=%d cb=%d trig=%d",
+                  slot, s.name.c_str(), s.curFrame, s.frames.size(), s.stopFrame, s.freezeCount,
+                  (int)s.paused, (int)s.looping, s.groupId, (int)s.visible, s.completionCb, s.triggerFrame);
+    return buf;
+}
+
+bool logEnabled() {
+    static const bool on = std::getenv("ANIM_LOG") != nullptr;
+    return on;
+}
+
+static void animLog(const char* what, int slot) {
+    if (logEnabled()) { Log::info("ANIM %-12s %s", what, debugSlot(slot)); }
+}
+
 void reset() {
     for (auto& s : g_slots) { s = Slot{}; }
     g_firedCbs.clear();
@@ -172,6 +198,7 @@ int addByName(ResArchive& arc, const char* name, bool looping, bool frozen) {
             if (g.filled >= g.size) { g_openGroup = -1; }   // group full -> close (g_nGroupCount++)
         }
     }
+    animLog("add", slot);
     return slot;
 }
 
@@ -272,6 +299,7 @@ int findByName(const char* name) {
 }
 
 void freeSlot(int slot) {
+    animLog("free", slot);
     if (slot >= 0 && slot < MAX_SLOTS) { g_slots[slot] = Slot{}; }
 }
 
@@ -297,16 +325,19 @@ int getCurrentFrame(int slot) {
 // Anim_Freeze @0x00407050: increment the freeze count (hide one level).
 void freeze(int slot) {
     if (slot >= 0 && slot < MAX_SLOTS) { ++g_slots[slot].freezeCount; }
+    animLog("freeze", slot);
 }
 
 // Anim_Unfreeze @0x004070f0: decrement the freeze count, floored at 0 (reveal one level).
 void unfreeze(int slot) {
     if (slot >= 0 && slot < MAX_SLOTS && g_slots[slot].freezeCount > 0) { --g_slots[slot].freezeCount; }
+    animLog("unfreeze", slot);
 }
 
 // Anim_ResetFreeze @0x004071a0: clear the freeze count outright (fully reveal).
 void resetFreeze(int slot) {
     if (slot >= 0 && slot < MAX_SLOTS) { g_slots[slot].freezeCount = 0; }
+    animLog("resetFreeze", slot);
 }
 
 // Anim_FreezeAll @0x00407230 / Anim_UnfreezeAll @0x00407380: bulk freeze/unfreeze, but ONLY
@@ -350,6 +381,7 @@ void setStopFrame(int slot, int frame) {
     if (frame < 0) { frame = -1; }
     else if (frame > last) { frame = last; }
     s.stopFrame = frame;
+    animLog("setStopFrame", slot);
 }
 
 // Anim_IsAtStopFrame @0x00405610: literally `g_anAnimSlotStopFrame[slot] == -1`. The stop

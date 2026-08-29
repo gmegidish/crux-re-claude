@@ -180,6 +180,25 @@ bool RunProg::animFrameDue() {
     return false;
 }
 
+// Wait watchdog. WAIT_ANIM_END (0x1f) / WAIT_FRAME (0x13b) spin until Anim::tick clears
+// the slot's stop frame — but tick() skips FROZEN slots entirely and never advances a
+// PAUSED one, so a slot frozen/paused after its stop frame was armed strands the wait
+// forever. Rather than guess a fix, report it: after WATCHDOG_FRAMES the full slot state
+// plus the arming program/pc is logged (once, then every WATCHDOG_FRAMES so a live hang
+// keeps printing), and the wait continues exactly as the engine would.
+void RunProg::waitForStopFrame(int slot, int progId, int pc, int op) {
+    constexpr int WATCHDOG_FRAMES = 90;      // ~10s at the engine's 9fps anim tick
+    int frames = 0;
+    while (!Anim::atStopFrame(slot)) {
+        if (!pumpFrame()) { break; }         // quit / area-change / right-click skip
+        if (++frames % WATCHDOG_FRAMES == 0) {
+            Log::warn("WAIT STUCK %dframes: %s prog%d pc=0x%x op=0x%x %s -> %s",
+                      frames, scene_->name(), progId, pc, op, rpOpName(op),
+                      Anim::debugSlot(slot));
+        }
+    }
+}
+
 bool RunProg::pumpFrame() {
     // Advance the world (anims/timers) at the engine's ~9fps, not every present frame.
     if (animFrameDue()) {
@@ -208,6 +227,22 @@ bool RunProg::pumpFrame() {
 
 void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
     scene_ = &scene;
+
+    // The "this"/STANI register is a LOCAL of the engine's RunProg_Exec (local_a68,
+    // `local_a68 = -1` in its prologue — src/RUNPROG.cpp:222), not a global: every fresh
+    // RunProg_Exec starts with no current anim. GOSUB (0x65) stays inside the same
+    // invocation there, so it must NOT reset — hence the depth guard, since the port
+    // implements GOSUB as a recursive exec(). Without this the register leaks between
+    // handlers and "_THIS" resolves to some unrelated slot left over from a previous
+    // script — e.g. clicking an options button waited (forever) on a PAUSED anim from
+    // the options-screen setup, because a paused slot is never advanced and so never
+    // reaches the stop frame that ends the wait.
+    struct DepthGuard {
+        RunProg& vm;
+        explicit DepthGuard(RunProg& v) : vm(v) { if (vm.execDepth_++ == 0) { vm.curAnimSlot_ = -1; } }
+        ~DepthGuard() { --vm.execDepth_; }
+    } depthGuard(*this);
+
     const ScriptProgram* prog = scene.program(progId);
     if (!prog) { Log::error("RunProg: no program %d", progId); return; }
 
@@ -691,9 +726,7 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
             if (slot >= 0) {
                 Anim::setStopFrame(slot, in.a1);
                 if (disp_.isRealtime()) {
-                    while (!Anim::atStopFrame(slot)) {
-                        if (!pumpFrame()) { break; }
-                    }
+                    waitForStopFrame(slot, progId, (int)pc, in.op);
                 } else {
                     Anim::setCurrentFrame(slot, in.a1);
                 }
@@ -985,9 +1018,7 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
                 int last = Anim::frameCount(slot) - 1;
                 Anim::setStopFrame(slot, last);
                 if (disp_.isRealtime()) {
-                    while (!Anim::atStopFrame(slot)) {
-                        if (!pumpFrame()) { break; }   // quit / area-change / right-click skip
-                    }
+                    waitForStopFrame(slot, progId, (int)pc, in.op);
                 } else {
                     Anim::setCurrentFrame(slot, last);   // settle to the resting frame
                 }

@@ -14,17 +14,28 @@ namespace {
 uint8_t g_target6[768] = {0};
 int     g_gamma = 0;            // g_nPalGamma (0 = off)
 
-// SetPal_ApplyGamma (SETPAL.cpp 0x0046d200): leaves a non-zero component as
-// round(-comp*gamma/64 + gamma); 0 components and gamma==0 pass through.
+// SetPal_ApplyGamma (SETPAL.cpp @0x0046d200) — a NORMALIZED EXPONENTIAL ramp, read
+// off the FPU instructions (the decompiler flattened them into two opaque calls):
+//
+//     fld c; fchs; fimul gamma; fdiv 63.0; call exp; fsubr 1.0; fmul 63.0  -> num
+//     fild -gamma;              call exp; fsubr 1.0; fdivr num;  call ftol -> result
+//
+//   result = 63 * (1 - exp(-c*gamma/63)) / (1 - exp(-gamma))
+//
+// The divisor normalizes the curve so 63 maps to 63 (white stays white) and 0 to 0;
+// gamma > 0 brightens the midtones. `call 0x0048b5c0` is MSVC's exp (its math
+// descriptor at 0x004e15ca spells "exp"), and 0x0048af50 is __ftol, which TRUNCATES
+// toward zero — not round.
 uint8_t applyGamma6(uint8_t comp) {
     int c = comp & 0x3f;
-    if (g_gamma != 0 && c != 0) {
-        int r = (int)std::lround(-(double)c * (double)g_gamma / 64.0 + (double)g_gamma);
-        if (r < 0) { r = 0; }
-        if (r > 63) { r = 63; }
-        c = r;
-    }
-    return (uint8_t)c;
+    if (g_gamma == 0 || c == 0) { return (uint8_t)c; }
+    const double den = 1.0 - std::exp(-(double)g_gamma);
+    if (den == 0.0) { return (uint8_t)c; }
+    const double num = 63.0 * (1.0 - std::exp(-(double)c * (double)g_gamma / 63.0));
+    int r = (int)(num / den);          // __ftol: truncate toward zero
+    if (r < 0) { r = 0; }
+    if (r > 63) { r = 63; }
+    return (uint8_t)r;
 }
 
 inline uint8_t exp6(uint8_t v) { v &= 0x3f; return (uint8_t)((v << 2) | (v >> 4)); }

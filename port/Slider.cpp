@@ -210,6 +210,20 @@ void setValue(int id, int value) {
 // maxStep pixels per tick, ticking animation frames until the mouse is reached or
 // the button is released. Returns the resulting value. Horizontal sliders track
 // mouseX; vertical sliders track mouseY.
+// Wait watchdog: the two interactive ops below block while the left button is held.
+// If the release is never observed (or the thumb can never reach the cursor) they spin
+// silently, which is indistinguishable from a hung game. Log the state periodically
+// instead — the loop keeps running exactly as the engine's does.
+static void watchdog(int& frames, const char* what, const SliderEntry* s, Display& disp) {
+    constexpr int WATCHDOG_FRAMES = 90;   // ~10s at the 9fps anim tick
+    if (++frames % WATCHDOG_FRAMES != 0) { return; }
+    Log::warn("SLIDER STUCK %s %dframes: thumb=(%d,%d) mouse=(%d,%d) pixel=[%d..%d] "
+              "value=[%d..%d] maxStep=%d anim=%s held=%d",
+              what, frames, s->thumbX, s->thumbY, disp.mouseX(), disp.mouseY(),
+              s->pixelLo, s->pixelHi, s->valueLo, s->valueHi, s->maxStep,
+              Anim::debugSlot(s->animSlot), (int)disp.leftButtonHeld());
+}
+
 int trackClicked(int id, Display& disp, const std::function<bool()>& pumpFrame) {
     SliderEntry* s = resolve(id);
     if (!s) { return 0; }
@@ -223,6 +237,7 @@ int trackClicked(int id, Display& disp, const std::function<bool()>& pumpFrame) 
     }
 
     int dir = 1;   // walk direction sign
+    int frames = 0;   // wait-watchdog counter
 
     if ((s->flags & FLAG_VERT) == 0) {
         // Horizontal: thumb travels along X toward mouseX.
@@ -248,6 +263,7 @@ int trackClicked(int id, Display& disp, const std::function<bool()>& pumpFrame) 
                 syncAnim(s, s->thumbX, sp);
             }
 
+            watchdog(frames, "trackClicked-h", s, disp);
             if (!pumpFrame()) { break; }              // quit / area change
             if (!disp.leftButtonHeld()) { dir = 0; }  // button released -> stop
         }
@@ -279,6 +295,7 @@ int trackClicked(int id, Display& disp, const std::function<bool()>& pumpFrame) 
                 syncAnim(s, s->thumbY, sp);
             }
 
+            watchdog(frames, "trackClicked-v", s, disp);
             if (!pumpFrame()) { break; }
             if (!disp.leftButtonHeld()) { dir = 0; }
         }
@@ -293,6 +310,7 @@ int trackClicked(int id, Display& disp, const std::function<bool()>& pumpFrame) 
 int drag(int id, Display& disp, const std::function<bool()>& pumpFrame) {
     SliderEntry* s = resolve(id);
     if (!s) { return 0; }
+    int frames = 0;   // wait-watchdog counter
     int sp = span(s);
 
     // Headless / non-realtime: no live input to wait on. Return the real current
@@ -305,6 +323,7 @@ int drag(int id, Display& disp, const std::function<bool()>& pumpFrame) {
     if ((s->flags & FLAG_VERT) == 0) {
         // Horizontal drag.
         while (disp.leftButtonHeld()) {
+            watchdog(frames, "drag", s, disp);
             int rx, ry, rw, rh;
             if (Anim::frameBounds(s->animSlot, rx, ry, rw, rh)) {
                 int my = disp.mouseY();
@@ -333,6 +352,7 @@ int drag(int id, Display& disp, const std::function<bool()>& pumpFrame) {
     } else {
         // Vertical drag.
         while (disp.leftButtonHeld()) {
+            watchdog(frames, "drag", s, disp);
             int rx, ry, rw, rh;
             if (Anim::frameBounds(s->animSlot, rx, ry, rw, rh)) {
                 int mx = disp.mouseX();

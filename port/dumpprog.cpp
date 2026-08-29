@@ -21,6 +21,15 @@
 #include <map>
 #include <string>
 
+// Print the scene's anim-name table: script opcodes address anims by INDEX into
+// this table, so a trace line like `0x1f a0=14` is unreadable without it.
+static void dumpAnimNames(const Scene& sc) {
+    std::printf("anim name table (%zu entries):\n", sc.animCount());
+    for (size_t i = 0; i < sc.animCount(); ++i) {
+        std::printf("  %2zu: %s\n", i, sc.animName((int)i).c_str());
+    }
+}
+
 static void dumpProgram(const Scene& sc, const char* scene, int id) {
     const ScriptProgram* p = sc.program(id);
     if (p == nullptr) {
@@ -76,6 +85,8 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "error: scene '%s' not found / failed to load\n", scene);
         return 1;
     }
+
+    dumpAnimNames(sc);
 
     if (std::strcmp(progArg, "all") == 0) {
         for (int id = 0; id < (int)sc.programCount(); ++id) { dumpProgram(sc, scene, id); }

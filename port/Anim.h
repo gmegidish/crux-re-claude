@@ -110,6 +110,11 @@ bool frameBounds(int slot, int& x, int& y, int& w, int& h);
 // wrap; one-shot anims stop on the last frame). Call once per animation tick.
 void tick();
 
+// One-line state dump of a slot, for diagnostics (wait watchdog, ANIM_LOG).
+// Returns a static buffer: name, curFrame/frameCount, stopFrame, freezeCount,
+// paused, looping, groupId. Safe on an inactive/out-of-range slot.
+const char* debugSlot(int slot);
+
 // Blit every active+visible slot's current frame into fb (lowest add order
 // first — the engine z-sorts; for the static menu, add order suffices).
 void drawAll(Framebuffer& fb);

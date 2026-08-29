@@ -41,6 +41,7 @@ public:
     const std::string& scaScm(int i) const { return at(scaScmNames_, i); }
     const std::string& exitName(int i) const { return at(exitNames_, i); }
     const std::string& animName(int i) const { return at(animNames_, i); }
+    size_t animCount() const { return animNames_.size(); }
     const std::string& paletteName(int i) const { return at(paletteNames_, i); }
     const std::string& themeName(int i) const { return at(themeNames_, i); }  // 'thm' table (PLAY_MUSIC)
     const std::string& soundName(int i) const { return at(soundNames_, i); }   // 'snd' table (PLAY_SOUND/SPEECH)
