@@ -92,6 +92,12 @@ public:
     void dispatchAnimCallbacks();
 private:
 
+    // Resolve an anim-name-table index to a slot. The table's "_THIS" entry is not a
+    // resource name — it means "the current STANI slot" (curAnimSlot_). Every anim opcode
+    // must go through this; calling Anim::findByName on the raw name silently no-ops on
+    // "_THIS" (that is how FREE_ANIM stopped dumping VVI2FRMQ, leaving it looping forever).
+    int animSlotFor(int nameIdx);
+
     bool pumpFrame();                    // op 0x3b: advance/render one paced frame; false = stop
 
     // Subtitle currently on screen (op 0xcd/0x50). pumpFrame draws it over the composited

@@ -72,6 +72,11 @@ void clearSprites();
 // link, so we remove the first link whose tag==`tag`. Returns true if one was removed.
 bool removeSprite(int tag);
 
+// Drop the sprite link registered for anim slot `animSlot`, if any. Anim_MarkForDump
+// (@0x00405810) does this before queueing a slot: an anim about to be dumped must stop
+// being a clickable hotspot. Returns true if one was removed.
+bool removeSpriteBySlot(int animSlot);
+
 // LINKFULL sprite-hotspot introspection (for the debug overlay). spriteInfo fills
 // the link's anim slot, its resolved node (findNodeByTag, or -1), and flags.
 int  spriteCount();

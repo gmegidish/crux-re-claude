@@ -28,7 +28,10 @@ SRCS := main.cpp ResArchive.cpp Framebuffer.cpp Display.cpp Scm.cpp Sprite.cpp B
 OBJS := $(SRCS:.cpp=.o)
 # dumpprog is a standalone tool (no SDL): just the resource loader + scene parser.
 DUMP_OBJS := dumpprog.o Scene.o ResArchive.o
-DEPS := $(OBJS:.o=.d) dumpprog.d
+# Self-checks (link the anim subsystem + its deps against the real archive).
+TEST_OBJS := test_dumpqueue.o Anim.o Area.o HelpBlit.o Bani.o Sprite.o Framebuffer.o ResArchive.o
+TESTBIN := test_dumpqueue
+DEPS := $(OBJS:.o=.d) dumpprog.d test_dumpqueue.d
 BIN  := crux
 DUMPBIN := dumpprog
 
@@ -86,7 +89,14 @@ click: $(BIN)
 	@RP_TRACE=1 MENU_CLICK=$(F) $(HEADLESS) ./$(BIN) $(DATADIR) 2>&1 \
 		| grep -iE "menu click|exec program|UNIMPL|play SCM" || true
 
-clean:
-	rm -f $(OBJS) $(DEPS) dumpprog.o $(BIN) $(DUMPBIN)
+# Run the self-checks.
+test: $(TESTBIN)
+	@./$(TESTBIN) $(DATADIR)
 
-.PHONY: all run rp rpall dprog theme themedump menu click clean
+$(TESTBIN): $(TEST_OBJS)
+	$(CXX) $(TEST_OBJS) -o $@ $(LDFLAGS)
+
+clean:
+	rm -f $(OBJS) $(DEPS) dumpprog.o test_dumpqueue.o $(BIN) $(DUMPBIN) $(TESTBIN)
+
+.PHONY: all run rp rpall dprog theme themedump menu click test clean

@@ -209,6 +209,17 @@ bool Area::removeSprite(int tag) {
     return false;
 }
 
+bool Area::removeSpriteBySlot(int animSlot) {
+    for (size_t i = 0; i < g_sprites.size(); ++i) {
+        if (g_sprites[i].animSlot == animSlot) {
+            g_sprites.erase(g_sprites.begin() + (long)i);
+            logAreaNodes("removespritebyslot");
+            return true;
+        }
+    }
+    return false;
+}
+
 // --- Selection list (ports src/AREAS.cpp Area_*List, RunProg ops 0x15e-0x165) ---
 void Area::resetList()    { g_listCount = 0; g_listCursor = 0; logSelList("reset"); }   // 0x15e Area_ResetList
 void Area::rewindList()   { g_listCursor = 0; }                    // 0x15f Area_RewindList

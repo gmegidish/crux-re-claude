@@ -1,5 +1,6 @@
 #include "Anim.h"
 #include "HelpBlit.h"
+#include "Area.h"
 #include "Log.h"
 #include <algorithm>
 #include <cstdio>
@@ -30,6 +31,7 @@ struct Slot {
     bool   looping = false;           // wrap to 0 at the end (else stop on last frame)
     int    curFrame = 0;
     int    x = 0, y = 0;              // slot screen position
+    bool   dumpPending = false;       // engine flag bit 2: queued for dump, still live until processed
     int    stopFrame = -1;            // halt auto-advance at this frame (-1 = none); g_anAnimSlotStopFrame
     int    zBase = 0;                 // Z-sort / draw-order key (g_nCharWalkTableBase, op 0x137)
     int    groupId = -1;              // group this slot belongs to (-1 = none); g_anAnimSlotGroupId
@@ -45,6 +47,9 @@ Slot g_slots[Anim::MAX_SLOTS];
 // VM drains these (Anim::takeFiredCallback) and runs each — the engine's Anim_HandleFrameTick
 // -> script-trigger dispatch. A queue keeps Anim decoupled from RunProg.
 std::vector<int> g_firedCbs;
+
+// Slots marked for dump but not yet freed (engine g_anDumpQueue[50] / g_nDumpQueueCount).
+std::vector<int> g_dumpQueue;
 
 // --- anim-group state (mirrors engine globals g_anGroupSize / g_anGroupTriggerPct /
 //     g_anGroupActiveSlot / g_nGroupCount / g_nGroupMemberTemp). A group is a set of
@@ -142,6 +147,7 @@ static void animLog(const char* what, int slot) {
 void reset() {
     for (auto& s : g_slots) { s = Slot{}; }
     g_firedCbs.clear();
+    g_dumpQueue.clear();
     for (auto& g : g_groups) { g = Group{}; }
     g_openGroup = -1;
 }
@@ -231,6 +237,12 @@ static void tickGroups() {
 // anim ends, the group releases it (active -> none) so the next tick can re-roll. Called
 // once per animation tick from the render loop.
 void tick() {
+    // Frame boundary first: free everything marked during the previous frame. The engine
+    // drains g_anDumpQueue from its dispatcher, and its trace shows a mark and its dump
+    // landing back-to-back with no load between them ("marking for dump: VVI2TOK at 6" /
+    // "dumping: VVI2TOK at 6"), so the queue is a per-frame deferral — a marked slot stays
+    // drawn for the rest of the frame that marked it, and dies at the next boundary.
+    processDumpQueue();
     tickGroups();
     for (int i = 0; i < MAX_SLOTS; ++i) {
         Slot& s = g_slots[i];
@@ -253,7 +265,17 @@ void tick() {
         const bool reachedStop = (s.stopFrame >= 0 && s.curFrame >= s.stopFrame);
         if (step != 0 && s.curFrame >= (int)s.frames.size()) {
             if (s.looping) { s.curFrame = 0; }
-            else { s.curFrame = (int)s.frames.size() - 1; s.paused = true; }   // rest on last frame, STILL drawn
+            else {
+                // Anim_HandleFrameTick @0x004059c0 (end-of-anim branch @0x00406140): a
+                // LOOPING slot (flags bit 4) rewinds to 0; every other slot falls through
+                // to Anim_MarkForDump @0x004061d1 — bit 5 (0x20) only adds a clamp to the
+                // last frame on the way. So a one-shot anim DISPOSES OF ITSELF when it
+                // finishes; it does not park on its last frame forever (which left the
+                // port's VVI2FRMQ / VVI2TOK / VVKCTO2 on screen and replaying).
+                s.curFrame = (int)s.frames.size() - 1;   // clamp; still drawn this frame
+                s.paused = true;
+                markForDump(i);
+            }
             // A grouped member whose anim just ended is released so the group re-rolls.
             if (s.groupId >= 0 && s.groupId < MAX_GROUPS && g_groups[s.groupId].activeSlot == i) {
                 g_groups[s.groupId].activeSlot = -1;
@@ -296,6 +318,27 @@ int findByName(const char* name) {
         if (g_slots[i].active && strcasecmp(g_slots[i].name.c_str(), name) == 0) { return i; }
     }
     return -1;
+}
+
+// Anim_MarkForDump @0x00405810: drop the slot's area sprite if it has one, then flag it
+// dump-pending and enqueue. The slot stays ACTIVE — it keeps drawing and advancing, and
+// a stop frame armed on it still counts — until processDumpQueue() frees it.
+void markForDump(int slot) {
+    if (slot < 0 || slot >= MAX_SLOTS || !g_slots[slot].active) { return; }
+    Slot& s = g_slots[slot];
+    if (s.dumpPending) { return; }                  // already queued
+    Area::removeSpriteBySlot(slot);                 // engine: flags & 0x1000 -> Area_RemoveSprite
+    s.dumpPending = true;
+    g_dumpQueue.push_back(slot);
+    animLog("markForDump", slot);
+}
+
+// Anim_ProcessDumpQueue @0x004074d0: free every queued slot, then clear the queue.
+void processDumpQueue() {
+    for (int slot : g_dumpQueue) {
+        if (slot >= 0 && slot < MAX_SLOTS && g_slots[slot].dumpPending) { freeSlot(slot); }
+    }
+    g_dumpQueue.clear();
 }
 
 void freeSlot(int slot) {

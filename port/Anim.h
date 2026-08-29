@@ -33,6 +33,23 @@ int addByName(ResArchive& arc, const char* name, bool looping, bool frozen);
 int  findByName(const char* name);           // slot with this name, or -1
 void freeSlot(int slot);
 
+// --- DEFERRED DUMP (engine Anim_MarkForDump @0x00405810 / Anim_ProcessDumpQueue
+//     @0x004074d0, g_anDumpQueue[50]) ---
+// The engine does NOT free an anim when a script asks it to (op 0x13). It sets the
+// slot's dump-pending flag and queues it; the slot stays active, drawn and advancing
+// until the queue is processed. The trace of the real engine shows the ordering:
+//
+//     marking for dump: VVI2FRMQ at 6
+//     Adding animation: VVI2SHTC/7
+//     Finished adding: VVI2SHTC/7
+//     dumping: VVI2FRMQ at 6
+//
+// i.e. the outgoing anim is kept alive until its replacement has finished loading —
+// so processDumpQueue() runs at the end of addByName(). (The engine also drives it
+// from a command dispatcher at 0x00403294; that path isn't modelled.)
+void markForDump(int slot);                  // Anim_MarkForDump: flag + enqueue, do not free
+void processDumpQueue();                     // Anim_ProcessDumpQueue: free everything queued
+
 // --- per-slot STOP FRAME (engine Anim_SetStopFrame @0x004054b0 / g_anAnimSlotStopFrame) ---
 // Set the frame at which `slot` should halt auto-advance. tick() does NOT advance a
 // slot past its stop frame (it clamps curFrame to stopFrame and leaves the slot's
