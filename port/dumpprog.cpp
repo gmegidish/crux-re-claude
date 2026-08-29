@@ -30,6 +30,15 @@ static void dumpAnimNames(const Scene& sc) {
     }
 }
 
+// The scene's 15-entry cache-slot table: script program ids the ENGINE runs at scene
+// entry. Adv_RunScene (0x004101f0) executes slots 8, 2, 9 then (after the palette tick)
+// 10, 5, 11 — the port's runScene only runs slot 0.
+static void dumpCacheSlots(const Scene& sc) {
+    std::printf("cache slots:");
+    for (int i = 0; i < 15; ++i) { std::printf(" [%d]=%d", i, sc.cacheSlot(i)); }
+    std::printf("\n");
+}
+
 static void dumpProgram(const Scene& sc, const char* scene, int id) {
     const ScriptProgram* p = sc.program(id);
     if (p == nullptr) {
@@ -86,6 +95,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    dumpCacheSlots(sc);
     dumpAnimNames(sc);
 
     if (std::strcmp(progArg, "all") == 0) {
