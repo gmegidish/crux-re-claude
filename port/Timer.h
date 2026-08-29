@@ -15,9 +15,15 @@ namespace Timer {
 // (ops 0x178 Timer_AddSync / 0x196 Timer_AddAsync — both one-shot here.)
 void addOnce(int progId, int frames);
 
-// Register a repeating timer: run `progId` every `frames` ticks (op 0x17e
-// Timer_AddWithReset — the engine stows `frames` as the re-arm value).
+// Register a self-resetting timer (op 0x17e Timer_AddWithReset): fires `progId` once after
+// `frames` ticks and is then removed, exactly like a one-shot — `frames` is only stowed as
+// the re-arm value for resetCounters(). At the tick level this is identical to addOnce; a
+// repeat happens because the fired program re-adds the timer. (See Timer.cpp for why.)
 void addRepeat(int progId, int frames);
+
+// Timer_ResetCounters: restore each self-resetting timer's countdown from its stored value.
+// Engine turn-loop facility; currently unused in the port (kept for faithfulness).
+void resetCounters();
 
 // Remove every timer registered for `progId` (op 0x18f Timer_Kill).
 void kill(int progId);

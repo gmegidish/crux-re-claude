@@ -659,24 +659,21 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
             break;
         }
 
-        // -- ANIM_FREEZE_ALL (Anim_FreezeAll @0x00407230, dispatcher calls func_0x004012ee
-        //    thunk with no operands): freeze every active anim slot — the inverse of
-        //    0x194. The engine loops all 0x96 slots, freezing those whose active/visible
-        //    flag bits are set, then fires tick-callbacks(0) + Timer_Tick (not ported, as
-        //    with 0x194). a0/a1/a2 are unused — the args in the bytecode (incl. the garbage
-        //    a0=0x65766100) are read by the decoder but ignored by this op. --
+        // -- ANIM_FREEZE_ALL (Anim_FreezeAll @0x00407230): INCREMENT the freeze count of every
+        //    on-screen-or-grouped active slot (NOT every active slot, and NOT a reset). Balanced
+        //    against 0x194: enter-options FreezeAll then back-to-game UnfreezeAll, so a base-
+        //    hidden flower stays hidden across the pair. a0/a1/a2 unused. (Engine also fires
+        //    tick-callbacks(0) + Timer_Tick — not ported.) --
         case 0x193:
-            for (int s = 0; s < Anim::MAX_SLOTS; ++s) {
-                if (Anim::active(s)) { Anim::freeze(s); }
-            }
+            Anim::freezeAll();
             break;
 
-        // -- ANIM_UNFREEZE_ALL (Anim_UnfreezeAll @0x00407380): resume every active anim
-        //    slot. (Engine also fires tick-callbacks(1) + Timer_Untick — not ported.) --
+        // -- ANIM_UNFREEZE_ALL (Anim_UnfreezeAll @0x00407380): DECREMENT the freeze count of
+        //    every on-screen-or-grouped active slot (floored at 0). The inverse of 0x193; using
+        //    resetFreeze here instead wrongly revealed every hidden flower on "back to game"
+        //    (endless animation). (Engine also fires tick-callbacks(1) + Timer_Untick.) --
         case 0x194:
-            for (int s = 0; s < Anim::MAX_SLOTS; ++s) {
-                if (Anim::active(s)) { Anim::resetFreeze(s); }
-            }
+            Anim::unfreezeAll();
             break;
 
         // -- WAIT_FRAME (RunProg_Exec @0x00462560 case 0x13b): resolve slot = animName(a0)
@@ -731,13 +728,14 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
             break;
         }
 
-        // -- UNFREEZE_ANIM (engine 0x13d): Anim_SetFrameStep(slot,1) — resume frame advance.
-        //    NOT Anim_ResetFreeze (that's the visibility unfreeze, op 0x195). --
+        // -- UNFREEZE_ANIM (engine 0x13d): Anim_SetFrameStep(slot,1) AND clear the trigger
+        //    frame (g_anAnimSlotTriggerFrame = -1) — resume frame advance, drop any armed
+        //    frame trigger. NOT Anim_ResetFreeze (that's the visibility unfreeze, op 0x195). --
         case 0x13d: {
             const std::string& nm = scene_->animName(in.a0);
             int slot = (isThisSlot(nm.c_str())) ? curAnimSlot_
                                                              : Anim::findByName(nm.c_str());
-            if (slot >= 0) { Anim::setFrameStep(slot, 1); }
+            if (slot >= 0) { Anim::setFrameStep(slot, 1); Anim::setTriggerFrame(slot, -1); }
             break;
         }
 
@@ -1156,6 +1154,16 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
             const std::string& nm = scene_->animName(in.a0);
             int slot = (isThisSlot(nm.c_str())) ? curAnimSlot_ : Anim::findByName(nm.c_str());
             if (slot >= 0) { Anim::setTriggerFrame(slot, in.a1); }
+            break;
+        }
+        // -- ANIM_SET_TRIGGER_LAST (RunProg_Exec @0x00462560 case 0x1f8): resolve slot from
+        //    animName(a0)/"this" and set g_anAnimSlotTriggerFrame[slot] = frameCount-1 — i.e.
+        //    trigger on the LAST frame. Same store as 0x167, just pinned to the final frame
+        //    (engine ops_1c0_1ff.inc: TriggerFrame = AnimFrameCount-1). --
+        case 0x1f8: {
+            const std::string& nm = scene_->animName(in.a0);
+            int slot = (isThisSlot(nm.c_str())) ? curAnimSlot_ : Anim::findByName(nm.c_str());
+            if (slot >= 0) { Anim::setTriggerFrame(slot, Anim::frameCount(slot) - 1); }
             break;
         }
         case 0x19b:   break;  // Anim_BeginNormalDraw (RunProg_Exec @0x00462560 case 0x19b ->

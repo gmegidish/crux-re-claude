@@ -72,8 +72,11 @@ void setCompletionCallback(int slot, int progId, int frame);  // 0x159/0x185: cb
 int  takeFiredCallback();
 void setPosition(int slot, int x, int y);
 void setCurrentFrame(int slot, int frame);
-void freeze(int slot);
-void resetFreeze(int slot);                  // fully unfreeze (freeze count -> 0)
+void freeze(int slot);                       // Anim_Freeze: freeze count + 1 (hide one level)
+void unfreeze(int slot);                     // Anim_Unfreeze: freeze count - 1, floored at 0
+void resetFreeze(int slot);                  // Anim_ResetFreeze: freeze count -> 0 (fully reveal)
+void freezeAll();                            // Anim_FreezeAll (0x193): inc on-screen/grouped slots
+void unfreezeAll();                          // Anim_UnfreezeAll (0x194): dec on-screen/grouped slots
 void setVisible(int slot, bool visible);     // show/hide in drawAll
 
 bool        active(int slot);                 // is this slot in use?

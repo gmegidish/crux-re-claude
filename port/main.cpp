@@ -37,6 +37,8 @@
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-function"
+#pragma clang diagnostic ignored "-Wmissing-field-initializers"
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define STBIW_ASSERT(x)
 #include "stb_image_write.h"
@@ -645,6 +647,37 @@ int main(int argc, char** argv) {
 
     // RUN_PROG=<scene>:<prog>: load a scene and execute one program (dynamic
     // complement to dumpprog) — verifies every opcode it uses is implemented.
+    // DUMP_PROGS=<scene>[:p1,p2,...]: disassemble whole script programs (TEMP debug).
+    if (const char* dp = std::getenv("DUMP_PROGS")) {
+        std::string s(dp);
+        size_t colon = s.find(':');
+        std::string sc = s.substr(0, colon);
+        Scene scene;
+        if (!scene.load(arc, sc.c_str())) { return 1; }
+        std::vector<int> want;
+        if (colon != std::string::npos) {
+            std::string list = s.substr(colon + 1);
+            size_t pos = 0;
+            while (pos < list.size()) {
+                size_t comma = list.find(',', pos);
+                want.push_back(std::atoi(list.c_str() + pos));
+                if (comma == std::string::npos) { break; }
+                pos = comma + 1;
+            }
+        }
+        for (int id = 0; id < (int)scene.programCount(); ++id) {
+            if (!want.empty() && std::find(want.begin(), want.end(), id) == want.end()) { continue; }
+            const ScriptProgram* p = scene.program(id);
+            Log::info("=== prog %d (%zu insns) ===", id, p->insns.size());
+            for (size_t pc = 0; pc < p->insns.size(); ++pc) {
+                const ScriptInsn& in = p->insns[pc];
+                Log::info("  pc=0x%zx op=0x%x %s a0=0x%x a1=0x%x a2=0x%x",
+                          pc, in.op, rpOpName(in.op), in.a0, in.a1, in.a2);
+            }
+        }
+        return 0;
+    }
+
     if (const char* rp = std::getenv("RUN_PROG")) {
         std::string s(rp);
         size_t colon = s.find(':');
