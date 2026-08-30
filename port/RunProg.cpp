@@ -198,6 +198,19 @@ void RunProg::waitForStopFrame(int slot, int progId, int pc, int op) {
     }
 }
 
+// Read the scene sound-table entry `idx` as a type-32 resource (raw 8-bit unsigned mono
+// PCM @22050, no header). Empty when the slot is unset or the resource is missing.
+std::vector<uint8_t> RunProg::soundBytes(int idx, std::string& keyOut) {
+    keyOut = scene_->soundName(idx);
+    if (keyOut.empty()) { return {}; }
+    for (const auto& en : arc_.entries()) {
+        if (en.type == 32 && strcasecmp(en.name.c_str(), keyOut.c_str()) == 0) {
+            return arc_.read(en);
+        }
+    }
+    return {};
+}
+
 int RunProg::animSlotFor(int nameIdx) {
     const std::string& nm = scene_->animName(nameIdx);
     return isThisSlot(nm.c_str()) ? curAnimSlot_ : Anim::findByName(nm.c_str());
@@ -508,22 +521,16 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
         //    cleared on area change and by the stop ops (0x16f Fx_StopLoop / 0x132 stop-tracked).
         //    The engine's subtitle-only / skip-mode guard isn't modeled (the port has audio). --
         case 0x15: {
-            const std::string& key = scene_->soundName(in.a0);
+            std::string key;
+            std::vector<uint8_t> snd = soundBytes(in.a0, key);
             if (!key.empty()) {
-                const ResEntry* e = nullptr;
-                for (const auto& en : arc_.entries()) {
-                    if (en.type == 32 && strcasecmp(en.name.c_str(), key.c_str()) == 0) { e = &en; break; }
-                }
-                if (e != nullptr) {
-                    std::vector<uint8_t> snd = arc_.read(*e);
-                    if (!snd.empty()) {
-                        Audio::clearChannel(Audio::SFX);
-                        Audio::queue(Audio::SFX, snd.data(), snd.size(), 0);  // 8-bit unsigned mono 22050
-                        Audio::setLoop(Audio::SFX, true);
-                    }
+                if (!snd.empty()) {
+                    Audio::clearChannel(Audio::SFX);
+                    Audio::queue(Audio::SFX, snd.data(), snd.size(), 0);  // 8-bit unsigned mono 22050
+                    Audio::setLoop(Audio::SFX, true);
                 }
                 Log::info("PLAY_SOUND snd[%d]='%s' (looping ch%d, %s)", in.a0, key.c_str(),
-                          Audio::SFX, e ? "playing" : "no type-32 resource");
+                          Audio::SFX, snd.empty() ? "no type-32 resource" : "playing");
             }
             break;
         }
@@ -545,6 +552,25 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
         // -- flow --
         case 0x70:  pc = count; break;                      // END_SCRIPT
         case 0x26a: pc = count; break;                      // BREAK_LOOP: end (engine also unwinds GOSUBs)
+
+        // -- SND_PLAY_ON_OBJ_ONESHOT (RunProg_Exec case 0x26f, handler @0x00464c8b):
+        //      Fx_PlayAnyChar( ((int*)0x0070dec4)[arg0] )
+        //    0x0070dec4 is the scene sound-handle table (the one op 0x15 indexes), and
+        //    Fx_PlayAnyChar (@0x0042ac80) scans mixer channels 4..6 for the first idle one
+        //    and plays there — so this is a fire-and-forget effect that can overlap others,
+        //    unlike 0x15's single looping room sound.
+        //    NOTE: RUNPROG_OPCODES.md lists 0x26f as "SND_STOP_ON_OBJ"; the disassembly
+        //    shows a PLAY. The doc is wrong (see tools/fidelity.py on trusting prose). --
+        case 0x26f: {
+            std::string key;
+            std::vector<uint8_t> snd = soundBytes(in.a0, key);
+            if (!key.empty()) {
+                const int ch = snd.empty() ? -1 : Audio::playOneShot(snd.data(), snd.size(), 0);
+                Log::info("SND_ONESHOT snd[%d]='%s' -> %s", in.a0, key.c_str(),
+                          snd.empty() ? "no type-32 resource" : (ch < 0 ? "pool busy" : "playing"));
+            }
+            break;
+        }
 
         // -- RESTART_SCRIPT (RunProg_Exec @0x00462560, case 0x3b, src ops_00_3f.inc):
         //    abandon the rest of this program and re-enter the interpreter with

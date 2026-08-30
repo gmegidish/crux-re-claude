@@ -98,6 +98,9 @@ private:
     // "_THIS" (that is how FREE_ANIM stopped dumping VVI2FRMQ, leaving it looping forever).
     int animSlotFor(int nameIdx);
 
+    // Scene sound-table entry `idx` as raw type-32 PCM bytes (empty if unset/missing).
+    std::vector<uint8_t> soundBytes(int idx, std::string& keyOut);
+
     bool pumpFrame();                    // op 0x3b: advance/render one paced frame; false = stop
 
     // Subtitle currently on screen (op 0xcd/0x50). pumpFrame draws it over the composited

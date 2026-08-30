@@ -8,7 +8,7 @@
 
 namespace {
 
-constexpr int kChannels = 6;   // music, 3 SCM voices, theme, + spare
+constexpr int kChannels = 9;   // music, 3 SCM voices, theme, looping sfx, 3 one-shots
 
 struct Chan {
     std::vector<int16_t> buf;   // S16 mono samples
@@ -158,6 +158,21 @@ void setLoop(int channel, bool loop) {
     SDL_LockAudioDevice(g_dev);
     g_chan[channel].loop = loop;
     SDL_UnlockAudioDevice(g_dev);
+}
+
+// Fx_PlayAnyChar @0x0042ac80: start at channel 4 and take the first whose mixer
+// active-flag is clear, giving up at 7. Ours is the same scan over the ONESHOT pool,
+// with "idle" meaning nothing left to play.
+int playOneShot(const uint8_t* data, size_t bytes, int fmt) {
+    for (int i = 0; i < ONESHOT_COUNT; ++i) {
+        const int ch = ONESHOT0 + i;
+        if (queuedSamples(ch) == 0) {
+            clearChannel(ch);          // reset the read cursor before reuse
+            queue(ch, data, bytes, fmt);
+            return ch;
+        }
+    }
+    return -1;                         // all busy — the engine drops the effect too
 }
 
 }  // namespace Audio

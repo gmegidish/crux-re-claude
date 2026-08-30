@@ -24,6 +24,10 @@ constexpr int THEME  = 4;  // room-music sequencer (persists across SCM reset())
 constexpr int SFX    = 5;  // looping room sound-effect (op 0x15 PLAY_SOUND, engine FX
                            // channel 3); persists across SCM reset(), cleared on area
                            // change / op 0x16f (Fx_StopLoop) / op 0x132 (stop tracked).
+constexpr int ONESHOT0 = 6; // one-shot SFX pool. Fx_PlayAnyChar (@0x0042ac80) scans mixer
+constexpr int ONESHOT1 = 7; // channels 4..6 for the first idle one and plays there, so
+constexpr int ONESHOT2 = 8; // several short effects can overlap (op 0x26f).
+constexpr int ONESHOT_COUNT = 3;
 
 bool open();
 void close();
@@ -48,6 +52,11 @@ void clearChannel(int channel);
 // mono), bit2 = 44100 Hz (else 22050). The source is converted to the device's
 // mono 22050 S16 (stereo downmixed, 44100 decimated).
 void queue(int channel, const uint8_t* data, size_t bytes, int fmt);
+
+// Play a one-shot effect on the first idle channel of the ONESHOT pool, mirroring
+// Fx_PlayAnyChar's 4..6 scan. Returns the channel used, or -1 when all are busy
+// (the engine also gives up rather than interrupting a playing effect).
+int playOneShot(const uint8_t* data, size_t bytes, int fmt);
 
 // Mark a channel as looping: when its queue drains, the read cursor wraps to the
 // start instead of stopping (used for the op-0x15 room SFX). clearChannel clears it.
