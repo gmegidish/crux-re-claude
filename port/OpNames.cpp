@@ -51,8 +51,8 @@ const char* rpOpName(int op) {
     case 0x3e: return "LOAD_ANIM_CB";
     case 0x3f: return "STORE_ANIM_SLOT";
     case 0x41: return "REMOVE_AREA_SPRITE";
-    case 0x42: return "BEGIN_DIALOG";
-    case 0x43: return "END_DIALOG";
+    case 0x42: return "SET_CURRENT_ITEM";
+    case 0x43: return "CLEAR_CURRENT_ITEM";
     case 0x44: return "PLAY_ANIM_WAIT";
     case 0x45: return "SET_INTERACT_MODE1";
     case 0x46: return "SET_INTERACT_MODE2";
@@ -188,7 +188,7 @@ const char* rpOpName(int op) {
     case 0x1f6: return "ANIM_GET_FRAME_COUNT";
     case 0x1f7: return "REGS_CLEAR_ALL";
     case 0x1f8: return "ANIM_SET_TRIGGER_LAST";
-    case 0x1f9: return "IF_UNK_FALSE_SKIP";
+    case 0x1f9: return "IF_SPEAKING";
     case 0x1fd: return "NOP";
     case 0x1fe: return "ANIM_ADD_CENTERED";
     case 0x1ff: return "GRAN_GET_ANGLE_DIST";
@@ -253,6 +253,8 @@ const char* rpOpName(int op) {
     case 0x915: return "MOV_STOP_CHAR";
     case 0x916: return "ANIM_REWIND_SLOT";
     case 0x917: return "GV_CAN_DROP";
+    case 0x918: return "GV_ENABLE";
+    case 0x919: return "GV_DISABLE";
     case 0x91a: return "GFX_FLIP";
     case 0x91c: return "SCHED_TRIGGER_EVENT";
     case 0x960: return "GV_CLOSE_INVENTORY";

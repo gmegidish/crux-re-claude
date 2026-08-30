@@ -346,6 +346,13 @@ int Area::verbHandler(int node, int verb) {
     return -1;
 }
 
+bool Area::verbSlot(int node, int k, int& verb, int& handler) {
+    if (node < 0 || node >= g_count || k < 0 || k >= kVerbSlots) { return false; }
+    verb    = (int)recordInt(node, kVerb0 + k);
+    handler = (int)recordInt(node, kHandler0 + k);
+    return handler >= 0;
+}
+
 int Area::count() {
     return g_count;
 }

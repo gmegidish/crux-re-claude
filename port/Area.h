@@ -101,6 +101,11 @@ int cursorId(int node);
 // (p[6+k] where p[0x15+k]==verb), or -1 if none / out of range.
 int verbHandler(int node, int verb);
 
+// Enumerate a node's verb table directly: fills `verb`/`handler` for slot `k`
+// (0..14) and returns false when the slot is empty. Lets a caller ask "which verbs
+// does this node actually define?" rather than probing one verb at a time.
+bool verbSlot(int node, int k, int& verb, int& handler);
+
 // Number of loaded nodes.
 int count();
 

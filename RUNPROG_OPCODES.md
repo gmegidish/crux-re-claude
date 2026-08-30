@@ -90,6 +90,8 @@ opcode count is **~390**; the address space is sparse with large reserved gaps
 
 | Opcode | Name | Action |
 |--------|------|--------|
+| 0x42 | SET_CURRENT_ITEM ⚠ | Reset item state, then `g_nCurrentItem`(0x007d67b4)`= a0` and item-mode 1 — "start using item a0". The `_current` alias in 0xc/0xd/0x11 resolves to this |
+| 0x43 | CLEAR_CURRENT_ITEM ⚠ | **No arguments** (junk in the arg slot). Same reset with `g_nCurrentItem = -1`: cancel. Both also clear the drag slot (0x00629c08), set `g_nCursorMode`(0x00646754)`= 3`, `Adv_ClearCursorState()` + `Win_UpdateCursor()`. **Not dialog ops** |
 | 0x041 | REMOVE_AREA_SPRITE | Find & remove sprite matching arg0 from `g_anAreaSpriteList` |
 | 0x042 | BEGIN_DIALOG | Enter conversation mode (disable cursor, set dialog char, cursor→1) |
 | 0x043 | END_DIALOG | Exit conversation mode (dialog char→-1, cursor→walk) |
@@ -237,18 +239,35 @@ opcode count is **~390**; the address space is sparse with large reserved gaps
 | 0x19d | SLIDER_ADD | Add slider value → `var[reg]` |
 | 0x1a7 | WAIT_FOR_UNK | Busy-wait until condition clears |
 | 0x1a8 | SET_AMBIENT_MUSIC | Timed ambient music + clear music name |
+| 0x1a9 | THEME_FILL_AND_START ⚠ | No args. `Theme_FillMemAndStartStreams()` — prime the music pool and start streaming |
+| 0x1aa | ANIM_CLEAR_ALL_CALLBACKS ⚠ | No args. `Anim_ClearAllCompletionCallbacks()` (@0x00406ad0) — loops all 0x96 (=150) slots calling `Anim_SetCompletionCallback(i,-1,-1,-1)`, disarming every pending script trigger |
 | 0x1ad | FILES_SAVE_GAME | `Files_SaveGame("entry")` + `Files_SaveGameFull` |
 | 0x1f4 | MOV_MOVE_TO_SAVED | Move to saved hero position |
 | 0x1f5 | TXT_SET_COLOR | `Txt_SetColor(r,g,b)` from packed arg1 |
 | 0x1f6 | ANIM_GET_FRAME_COUNT | Frame count of stani → `var[reg]` |
 | 0x1f7 | REGS_CLEAR_ALL | Zero entire `g_anSpeechPlayed[]` (1500 entries) |
 | 0x1f8 | ANIM_SET_TRIGGER_LAST | Trigger on last frame |
-| 0x1f9 | IF_UNK_FALSE_SKIP | Skip block if condition == 0 |
+| 0x1f9 | IF_SPEAKING ⚠ | **No arguments** (its arg slots hold uninitialised junk). `SndMem_IsSpeaking()` (@0x004744f0); block runs only WHILE a speech line plays, else forward-scan to ELSE/ENDIF. Verified at handler 0x004678e6 |
 | 0x1fd | NOP | No-op |
 | 0x1fe | ANIM_ADD_CENTERED | Add anim positioned centred on last frame size |
 | 0x1ff | GRAN_GET_ANGLE_DIST | `Gran_GetAngleDist` (Graninv @0x00434190): block on a mouse drag, push angle (deg 0-360, 0=right CW) + pixel distance. (Old table said "push hero XY" — wrong.) |
 
 ### Cursor, audio channels, math, area sprites (0x200–0x2c5)
+
+> **Verified 2026-08-30 against the dispatch table at `0x00468f27`** (indexed `opcode - 1`
+> over `0..0x2c4`). Rows marked ⚠ were previously WRONG — this block had been filled in by
+> inference, and most of the "SND_*" names in the 0x262–0x26f range describe something else
+> entirely (SCM voice panning and PLAYER mode flags, not mixer volume/pitch/stop).
+> Argument slots, calibrated against `SET_VAR` (`var[[ebp-0x13c]] = [ebp-0x138]`, variable
+> file at `0x0070fa38`): `[ebp-0x13c]`=arg0, `[ebp-0x138]`=arg1, `[ebp-0x134]`=arg2.
+> Re-check any row here with `python3 tools/opcode.py 0x<op>` before relying on it.
+>
+> **Dispatch is not one table.** `RunProg_Exec` uses several range tables, each guarded by
+> `sub $base` / `cmp $count` / `ja default`: `0x001+0x2c4 @0x00468f27` (main),
+> `0x84d+0xb @0x00469a3b`, `0x8fe+0x1e @0x00469a6b`, `0x961+0x14 @0x00469ae7`,
+> `0x9c5+0x4 @0x00469b3b`, `0x906+0x5 @0x00469be4`, `0x1b59+0x18 @0x00469b77`.
+> A few opcodes (e.g. `0x9c4`) are handled by direct `cmpl $0x<op>` compares in
+> `0x462800..0x462960` instead. `tools/opcode.py` knows all the tables.
 
 | Opcode | Name | Action |
 |--------|------|--------|
@@ -259,27 +278,29 @@ opcode count is **~390**; the address space is sparse with large reserved gaps
 | 0x205 | SCHED_TICK | Tick scheduler/game loop once |
 | 0x206 | ANIM_WAIT_LAST_FRAME | Set stop-frame to last; busy-wait until reached |
 | 0x207 | SND_PLAY_ON_OBJ | Play sound attached to `_DAT_0070dec4[id]` |
-| 0x208 | INV_PLAY_SOUND_AT_ITEM | Play sound arg at item's screen position |
-| 0x209 | SND_PLAY_ON_NODE | Play sound arg relative to node id |
-| 0x20a | SND_STOP_ALL_NODE | Stop all node-relative sounds |
+| 0x208 | CURS_LOAD_SELECT ⚠ | `Curs_LoadCursorSelect(a1, obj->[0xd0], obj->[0xcc], obj->[0xce])` where `obj = g_0070d6f0[a0]`. **Not a sound op** |
+| 0x209 | PLAYER_SET_COVER_SPRITE ⚠ | `Player_SetCoverSprite(a0, a1)`. **Not a sound op** |
+| 0x20a | PLAYER_CLEAR_COVER_SPRITE ⚠ | `Player_SetCoverSprite(-1, -1)`. **Not a sound op** |
 | 0x20b | ANIM_SET_REVERSE | Set anim slot to reverse step (-1) |
-| 0x20c | SND_PLAY_SPEECH_BY_VAR | Play speech track `var[id]` |
-| 0x20d | SPEECH_SET_TAG_TO_VAR | Set speech tag to `var[id]` |
-| 0x20e | SND_PLAY_SPEECH_BY_ARG | Play speech track arg directly |
+| 0x20c | ADV_TICK_FRAMES ⚠ | `Adv_TickFrames(var[a0])` (@0x00412be0), skipped while the fast-forward local is set. **Not a sound op** |
+| 0x20d | SPEECH_SET_TAG ⚠ | `Speech_SetTag(a0, ...)` |
+| 0x20e | ADV_TICK_FRAMES ⚠ | `Adv_TickFrames(a1)` — count taken literally from **arg1**. `Adv_TickFrames` = per frame `Adv_Tick()` + `Timer_DispatchAsyncProg()`, then spin to the frame boundary; returns at once if the cutscene FSM `DAT_00629f50` is set. **Not a sound op** |
 | 0x20f–0x211 | SCHED_INTERRUPT_* | Enable/disable/set interrupt flag |
 | 0x258 | SCHED_SET_MODE2 | Set second scheduler mode |
 | 0x259 | GFX_INIT_IMG | `InitImg` |
 | 0x25a | ANIM_ADD_FROZEN | Add anim by num, freeze it |
-| 0x262/0x264/0x265 | SND_SET_PAN_L/R/C | Set pan position left/right/center |
-| 0x266 | SND_SET_VOLUME | Set sound volume |
-| 0x267 | SND_SET_PITCH | Set sound pitch/frequency |
-| 0x268 | SND_SET_MUSIC_VOL | Set music volume |
-| 0x269 | SND_PLAY_MUSIC | Play music from `_DAT_0070dec4[id]` |
+| 0x262 | VOICE_PAN_1 | `Snd_SetChannelPan(1, GI_PercentOfWidth(a1, a2))` — pan SCM voice channel 1 from a screen X |
+| 0x265 | VOICE_PAN_2 | `Snd_SetChannelPan(2, ...)` — same, channel 2 |
+| 0x264 | VOICE_PAN_3 | `Snd_SetChannelPan(3, ...)` — same, channel 3 |
+| 0x266 | PLAYER_VOICE_MASK_OR | `Player_SetFlags(a1)`: `g_nPlayerVoiceMask \|= a1`. Takes **arg1** |
+| 0x267 | PLAYER_VOICE_MASK_AND | `Player_ClearFlags(a1)`: `g_nPlayerVoiceMask &= a1` (an AND, not AND-NOT). **arg1** |
+| 0x268 | PLAYER_VOICE_MASK_SET | `Player_ResetFlags(a1)`: sets mask *and* its saved default. **arg1** |
+| 0x269 | PLAYER_SET_SPEAKING_CHAR | `Player_SetSpeakingChar(a0, a1)` |
 | 0x26a | BREAK_LOOP | Terminate script loop immediately |
-| 0x26b | SND_FADE_MUSIC | Fade music to arg |
-| 0x26c | SND_STOP_MUSIC | Stop music |
-| 0x26d | SND_STOP_ALL | Stop all sounds |
-| 0x26f | SND_STOP_ON_OBJ | Stop sound on `_DAT_0070dec4[id]` |
+| 0x26b | PLAYER_SET_PAL_FREEZE | `Player_SetPalFreezeMode(a1)` |
+| 0x26c | PLAYER_SET_SHARED_MODE | `Player_SetSharedMode()` — no args |
+| 0x26d | PLAYER_SET_ASYNC_READ | `Player_SetAsyncReadMode()` — no args |
+| 0x26f | SND_PLAY_ON_OBJ_ONESHOT | `Fx_PlayAnyChar(sndTable[a0])` — **plays** a one-shot on the first idle channel 4..6. NOT a stop |
 | 0x2bc | WAIT_SPEECH_OR_SKIP | Wait for speech; abort if done + skip-allowed |
 | 0x2bd | DIV_VAR | `var[id] /= arg` |
 | 0x2be | MUL_VAR | `var[id] *= arg` |
@@ -333,7 +354,7 @@ text alignment/mode, a global flag, and screen gamma. Earlier `SND_*` names here
 | 0x915 | MOV_STOP_CHAR | Stop/deactivate character id |
 | 0x916 | ANIM_REWIND_SLOT | Rewind named slot to start |
 | 0x917 | GV_CAN_DROP | Push `GV_CanDrop(slot, curSlot)` (Graninv @0x00432990): 3=GV-inventory disabled, 2=incompatible, 1=open, 0=can-drop. (Old table said "frame count" — wrong.) |
-| 0x918/0x919 | SCHED_EN/DISABLE_SCRIPT_TICK | Enable/disable per-script tick |
+| 0x918 / 0x919 | GV_SET_ENABLED ⚠ | `GV_SetEnabled(1)` / `GV_SetEnabled(0)` (@0x00432ad0, `g_nGVEnabled = arg`) — enable/disable the granular inventory. The value is an **immediate in the handler**, not an instruction operand. Dispatched from the `0x8fe..0x91c` table at `0x00469a6b`. **Not a scheduler op** |
 | 0x91a | GFX_FLIP | Flip/present display |
 | 0x91c | SCHED_TRIGGER_EVENT | Fire a scheduler event |
 
@@ -361,8 +382,11 @@ text alignment/mode, a global flag, and screen gamma. Earlier `SND_*` names here
 |--------|------|--------|
 | 0x974 | ADV_SET_FOCUS | Set adventure focus/target |
 | 0x975 | AREA_DRAW_NODE_RECT | Draw bounding rect of node |
-| 0x9c4 | GV_OPEN_INVENTORY | Open inventory view |
-| 0x9c5–0x9c9 | GRAN_SLIDER_* | Slider pos/max/reset/tick/get |
+| 0x9c4 | GV_OPEN_INVENTORY ⚠ | `GV_OpenInventory()` (@0x00432860) — show the native Win95 inventory panel. No args. Dispatched by a direct compare at `0x004628d1`, NOT the main table |
+| 0x9c5–0x9c6 | GV_* | (`0x9c6` = `GV_SetDestroyHandler(a0)`) |
+| 0x9c7 | GV_HIDE_AND_CLEAN ⚠ | `GV_HideAndClean()`. No args. **Not a slider op** |
+| 0x9c8 | GV_TICK_INVENTORY ⚠ | `GV_TickInventory()` — service the panel. No args. **Not a slider op** |
+| 0x9c9 | GV_CLOSE_INVENTORY ⚠ | `GV_CloseInventory()` (@0x00432750). No args. **Not a slider op** |
 | 0xc02 | GRAN_INIT_SLIDER | Initialize slider for object |
 | 0xc1c | MOV_INIT_GAME_MODE | Full game-mode init: reset area, `Mov_InitChar`, register all cursor types, border mode 0 |
 | 0x13ba | ANIM_ADD_FROZEN | `Anim_AddByNum(a0, loop=1, 0)` (joins the open group like 0x19) + `Anim_SetWalkTableBase(a1)` + `SetFrameStep(0)` + `SetCurrentFrame(0)` + `Anim_Freeze` — the frozen-at-frame-0 sibling of 0x19 |

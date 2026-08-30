@@ -306,6 +306,15 @@ void setCompletionCallback(int slot, int progId, int frame) {
     }
 }
 
+void clearAllCompletionCallbacks() {
+    for (int i = 0; i < MAX_SLOTS; ++i) {
+        g_slots[i].completionCb = -1;
+        g_slots[i].triggerFrame = -1;
+    }
+    g_firedCbs.clear();          // drop any that fired this frame but have not run yet
+    if (logEnabled()) { Log::info("ANIM clearAllCallbacks (all %d slots)", MAX_SLOTS); }
+}
+
 int takeFiredCallback() {
     if (g_firedCbs.empty()) { return -1; }
     int v = g_firedCbs.front();

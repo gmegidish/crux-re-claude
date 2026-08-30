@@ -161,6 +161,28 @@ static void drawNumber(uint8_t* rgb, int x, int y, int value, uint8_t r, uint8_t
 // Dump a 640x480 PNG of the area nodes: the backdrop in grey, every node's
 // bbox outlined (green = hit-testable, red = filtered out), labelled with its
 // index. Also logs each node's fields. Gated by the AREA_PNG env var (path).
+// AREA_VERBS=1: census of the verb table the DATA actually defines for this area.
+// The verb model (0=click, 1=right, 2=middle, 4=enter, 5=hover-hold, 6=leave, 8=idle,
+// 10=hotspot-changed-while-held, 0xb=key) is only actionable once we know which verbs
+// ship in the scenes — the port dispatches 0/1/4/6 today.
+static void dumpAreaVerbs() {
+    if (!std::getenv("AREA_VERBS")) { return; }
+    std::map<int, int> census;
+    for (int n = 0; n < Area::count(); ++n) {
+        std::string line;
+        for (int k = 0; k < 15; ++k) {
+            int verb = 0, handler = 0;
+            if (!Area::verbSlot(n, k, verb, handler)) { continue; }
+            char b[32];
+            std::snprintf(b, sizeof(b), " v%d->%d", verb, handler);
+            line += b;
+            ++census[verb];
+        }
+        if (!line.empty()) { Log::info("  node %2d:%s", n, line.c_str()); }
+    }
+    for (const auto& kv : census) { Log::info("  VERB %d used %d time(s)", kv.first, kv.second); }
+}
+
 static void dumpAreaPng(const Framebuffer& bg, const char* path) {
     std::vector<uint8_t> rgb((size_t)Framebuffer::W * Framebuffer::H * 3);
     // Backdrop, dimmed to ~40% so the coloured boxes stand out.
@@ -632,7 +654,18 @@ int main(int argc, char** argv) {
 
     // --- Milestone 2: open the 640x480 window + 8-bit framebuffer, show a test pattern. ---
     Display disp;
-    disp.open("Crux / Granny (SDL2 port)", 1);
+    // SCALE=<n>: integer upscale of the 640x480 output (nearest-neighbour). The renderer
+    // keeps a 640x480 logical size, so mouse coordinates — and therefore hit-testing and
+    // the drawn cursor — stay in game space regardless of the window size.
+    int scale = 1;
+    if (const char* sc = std::getenv("SCALE")) {
+        scale = std::atoi(sc);
+        if (scale < 1 || scale > 8) {
+            Log::warn("SCALE=%s out of range [1,8] — using 1", sc);
+            scale = 1;
+        }
+    }
+    disp.open("Crux / Granny (SDL2 port)", scale);
     Log::info("display: %s", disp.isHeadless() ? "HEADLESS" : "windowed");
     Audio::open();   // 22050/16-bit; stays silent if it can't init
     Theme::init(arc);   // room-music subsystem ready (mirrors Theme_Init at startup)
@@ -800,6 +833,7 @@ int main(int argc, char** argv) {
         // Load this area's palette/backdrop/area-nodes BEFORE its lifecycle runs, so an
         // intro anim plays on the correct background + palette (not the previous area's).
         std::vector<uint8_t> bgPlate = loadAreaVisuals(scene, vm, fb, arc, area);
+        dumpAreaVerbs();
 
         // Run the area's lifecycle scripts (sets up anims, plays intros, etc.),
         // stopping early if one requests an area change or the user quit.

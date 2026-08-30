@@ -85,6 +85,12 @@ bool groupOpen();
 //     and runs it. One-shot: cleared after firing. ---
 void setTriggerFrame(int slot, int frame);            // 0x167: where to fire (no cb change)
 void setCompletionCallback(int slot, int progId, int frame);  // 0x159/0x185: cb + frame; progId<0 clears
+
+// Anim_ClearAllCompletionCallbacks @0x00406ad0 (op 0x1aa): loop i over all 0x96 (=150 ==
+// MAX_SLOTS) slots calling Anim_SetCompletionCallback(i, -1, -1, -1) — disarm every armed
+// script trigger at once. Scripts use it to cancel pending anim callbacks before a scene
+// or cutscene change, so a stale trigger cannot fire into the new context.
+void clearAllCompletionCallbacks();
 // Pop the next fired callback program id (FIFO), or -1 if none. Drained each frame by RunProg.
 int  takeFiredCallback();
 void setPosition(int slot, int x, int y);

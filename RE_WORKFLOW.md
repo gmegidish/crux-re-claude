@@ -31,6 +31,8 @@ How to continue this RE project in a future Claude Code session.
 3. Switch context to CRUX.EXE:
      mcp__ghidra-mcp__switch_program  →  program: "CRUX.EXE"
 4. Read FUNCTIONS.md to see what's done and what to tackle next
+     ⚠ but read § "Verifying against the binary" FIRST — its ☑ column lies
+5. For port work, Ghidra is NOT required: objdump + tools/ cover most of it
 ```
 
 ---
@@ -112,6 +114,93 @@ git commit -m "re: reverse SourceFile.cpp (N functions)"
 ```
 
 ---
+
+## Verifying against the binary (READ THIS FIRST)
+
+**`src/` is not the engine — it is notes.** `FUNCTIONS.md`'s ☑ means "someone looked at
+this function", not "the code is here". Every port bug chased in Aug 2026 came from
+trusting a prose summary; every fix came from reading the instructions at the address the
+summary points to.
+
+Two ways `src/` misleads you:
+
+| Symptom | Example |
+|---|---|
+| **STUB** — body is empty / `// (See decompiled body at 0x...)` | `Anim_HandleFrameTick`, 46 of 47 `Adv_*` |
+| **SUSPECT** — body exists but carries decompiler residue (`FUN_`, `DAT_`, `undefined`) | `SetPal_ApplyGamma` — its FPU gamma curve came out as two opaque calls, and transcribing it blacked out the screen |
+
+```bash
+python3 tools/fidelity.py --verbose | grep <FunctionName>   # STUB / SUSPECT / solid + address
+objdump -d --start-address=0x004059c0 --stop-address=0x00406200 CRUX.EXE
+```
+Linear disassembly desyncs on data; if output looks like nonsense, try a start address a
+few bytes later until a known instruction lands on a boundary.
+
+## Tooling (tools/)
+
+| Tool | Use |
+|---|---|
+| `fidelity.py [--verbose]` | Per-module stubbed / suspect / solid. **Run before trusting `src/`.** |
+| `opcode.py 0x26f ...` | Resolve a RunProg opcode to its handler via the jump table at `0x00468f27` (index = `op-1`, range `1..0x2c4`), disassemble it, annotate arg slots, name call targets. Some opcodes (e.g. `0x9c4`) are dispatched by direct compares instead and won't resolve — search for `cmpl $0x<op>` in `0x462800-0x462960`. |
+| `callers.py Adv_ Anim_` | Call-site count per function — "is this stub even called?" |
+| `opcode_usage.py [--all]` | Opcode frequency across all 29 scenes vs what `RunProg.cpp` implements. ⚠ a high count can mean duplicated debug code (a give-all-items program using `0xc` is copied into every scene). |
+| `callgraph.py 0x004101f0` | The call sequence of one function, in order — how to read a 5 KB function without decoding it. |
+| `patch_trace.py` | Build `CRUX_DEBUG.EXE` — see below. |
+| `tracediff.py` | Diff the engine's trace against the port's log. |
+
+**Argument slots** in `RunProg_Exec`, calibrated against `SET_VAR`
+(`var[[ebp-0x13c]] = [ebp-0x138]`, variable file at `0x0070fa38`):
+`[ebp-0x140]` = opcode, `[ebp-0x13c]` = arg0, `[ebp-0x138]` = arg1, `[ebp-0x134]` = arg2.
+Several opcodes read **arg1**, not arg0 — check, don't assume.
+
+## The trace oracle — running the real engine
+
+The release build compiled `Debug_Trace(line, srcFile, fmt, ...)` out: its body at
+`0x0041a770` is an empty stub, so **no flag re-enables it**. `tools/patch_trace.py` rewrites
+that stub to jump into a code cave that formats via the game's own CRT and appends to
+`CRUXTRC.LOG`, lighting up all 177 call sites with file + line + message.
+
+```bash
+python3 tools/patch_trace.py          # CRUX.EXE -> CRUX_DEBUG.EXE (original untouched)
+wine CRUX_DEBUG.EXE                   # runs under wine; game data lives in ../granny
+ANIM_LOG=1 RP_TRACE=1 ./port/crux . 2>&1 | tee /tmp/port.log
+python3 tools/tracediff.py ../granny/CRUXTRC.LOG /tmp/port.log
+```
+
+Known-permanent divergences to ignore in the diff: the engine loads cursors
+(`CURSAREA`/`CURSEXIT`/`CURSHOUR`) and area backdrops (`MENU/8`, `VVI2/8`) as anim slots;
+the port has separate `Cursor` and backdrop paths.
+
+## Debugging the port
+
+```bash
+make -C port all && make -C port test          # build + self-checks
+SKIP_VIDEOS=1 START_AREA=VVE ANIM_LOG=1 RP_TRACE=1 ./port/crux . 2>&1 | tee /tmp/port.log
+SDL_VIDEODRIVER=dummy ANIM_LOG=1 RP_TRACE=1 RUN_PROG=VVE:1 ./port/crux .   # headless, one program
+./port/dumpprog . --scenes x                   # list all 29 scenes
+./port/dumpprog . vvi2 all                     # cache slots + anim-name table + opcodes
+```
+
+`RUN_PROG` headless is the tightest loop — it reproduced the whole VVI2 anim chain in a
+second and is how the `_THIS` bug was found. Scenes with the most anim traffic:
+**VVE (728), VVB (638), VVW (612), GAZBIG (562)**.
+
+Env vars: `START_AREA`, `SKIP_VIDEOS`, `SCALE` (1-8, nearest-neighbour window upscale),
+`RUN_PROG`, `RP_TRACE`, `ANIM_LOG`, `AREA_LOG`, `AREA_OVERLAY`, `LOOP_LOG`,
+`MENU_DUMP`/`MENU_HOVER`/`MENU_CLICK`, plus the dump modes in `main.cpp`.
+
+### Gotchas learned the hard way
+
+- **`_THIS` in the anim-name table.** An anim-table entry named `_THIS` is not a resource —
+  it means the current STANI slot. Always resolve via `RunProg::animSlotFor()`;
+  `Anim::findByName("_THIS")` silently returns -1 and the opcode no-ops.
+- **Junk arguments are normal.** No-arg opcodes (`0xf`, `0x10`, `0xff`, `0x12d`, `0x12e`,
+  `0xcb`, `0xce`, `0x1f9`, …) carry uninitialised slot data. **The script parser is
+  correct** — 111 opcodes never show junk; only the no-arg family does. Do not "fix" it.
+- **New IF opcodes must be added to `RunProg::isIfOpener`**, or `skipBlock` mis-balances
+  nested blocks and resumes at the wrong instruction — a silent control-flow bug.
+- **`RUNPROG_OPCODES.md`'s 0x200–0x2c5 block was largely invented.** ~20 rows have been
+  corrected against the binary and marked ⚠. Re-verify any row with `tools/opcode.py`.
 
 ## MCP tools reference
 

@@ -6,6 +6,17 @@
 > **Total functions**: 1870  
 > **Original source project**: `C:\DevStudio\Projects\Crux\`
 
+> ### ⚠ What the "Reversed" column means
+> **A ☑ means someone has looked at the function, NOT that its body was translated.**
+> `ADVENT.cpp` scores 47/47 below while 46 of its 47 functions are empty stubs whose body
+> is a comment (`// (See decompiled body at 0x...)`); `Advanim.cpp` scores 97/97 with 43
+> stubs. A present body can also be wrong where Ghidra emitted opaque `FUN_`/`DAT_` calls
+> — `SetPal_ApplyGamma` had a full body whose arithmetic was garbage.
+>
+> Run **`python3 tools/fidelity.py --verbose`** for the real per-module picture
+> (stubbed / suspect / solid) before trusting anything here. See `RE_WORKFLOW.md`
+> § "Verifying against the binary".
+
 ## Progress
 
 | Source File | Functions | Reversed | % |

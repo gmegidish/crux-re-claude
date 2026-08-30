@@ -70,7 +70,10 @@ bool playScmByName(ResArchive& arc, Display& disp, Framebuffer& fb, const char* 
                 // them all to one channel would serialize them -> growing delay.
                 int voice = ch.param & 0xff;
                 if (voice > 2) { voice = 2; }
-                Audio::queue(Audio::VOICE0 + voice, d, ch.size, fmt);
+                // g_nPlayerVoiceMask (ops 0x266/0x267/0x268) gates each voice.
+                if (Audio::voiceEnabled(voice)) {
+                    Audio::queue(Audio::VOICE0 + voice, d, ch.size, fmt);
+                }
                 ++audioChunks; audioBytes += ch.size;
             }
             else if (ch.type == Scm::TEXT) {

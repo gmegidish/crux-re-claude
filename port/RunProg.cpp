@@ -11,6 +11,7 @@
 #include "Sentence.h"
 #include "TextRender.h"
 #include "Area.h"
+#include "Inventory.h"
 #include "Cursor.h"
 #include "Log.h"
 #include <SDL.h>
@@ -39,6 +40,7 @@ bool RunProg::isIfOpener(int op) {
     case 0x0a:  // IF_VAR_NE
     case 0x0b:  // IF_VAR_GE
     case 0x0e:  // IF_VAR_EQ
+    case 0x1f9: // IF_SPEAKING
     case 0x11:  // IF_INV_HAS
     case 0x6f:  // IF_OBJECT_NOT_IN_LIST
         return true;
@@ -224,6 +226,27 @@ int RunProg::nodeAt(int x, int y) {
     return Area::hitTest(x, y);
 }
 
+void RunProg::tickFrames(int n) {
+    if (n <= 0) { return; }
+    // Guard against a junk operand: no-arg opcodes carry uninitialised slot data, and a
+    // wild count here would look exactly like a hang. 0x20e's count is a real operand, so
+    // this only ever trips on bad data — say so rather than spinning silently.
+    constexpr int kMaxFrames = 600;          // ~1 minute at the engine's 9fps
+    if (n > kMaxFrames) {
+        Log::warn("TICK_FRAMES: implausible count %d, clamping to %d", n, kMaxFrames);
+        n = kMaxFrames;
+    }
+    for (int i = 0; i < n; ++i) {
+        if (disp_.isRealtime()) {
+            if (!pumpFrame()) { break; }     // quit / area change
+        } else {
+            Anim::tick();
+            Timer::tick();
+            dispatchAnimCallbacks();
+        }
+    }
+}
+
 bool RunProg::pumpFrame() {
     // Advance the world (anims/timers) at the engine's ~9fps, not every present frame.
     if (animFrameDue()) {
@@ -245,6 +268,10 @@ bool RunProg::pumpFrame() {
     // whatever was baked into the frame when the wait began.
     if (!speechText_.empty()) {
         TextRender::drawSentence(fb_, speechText_, fb_.width() / 2, fb_.height() - 40);
+    }
+    // Drag rubber band (op 0x1ff), drawn from the drag origin to the live cursor.
+    if (dragLineActive_ && disp_.isRealtime()) {
+        fb_.drawLine(dragLineX_, dragLineY_, disp_.mouseX(), disp_.mouseY(), kDragLineColor);
     }
     if (disp_.isRealtime()) {
         const int mx = disp_.mouseX(), my = disp_.mouseY();
@@ -368,6 +395,72 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
             Area::linkFull(curAnimSlot_, in.a0, in.op == 0x169 ? 0 : 1);
             break;
 
+        // -- IF_SPEAKING (RunProg_Exec case 0x1f9, handler @0x004678e6): takes NO
+        //    arguments (its arg slots hold uninitialised junk in the data files). Calls
+        //    SndMem_IsSpeaking (@0x004744f0); when nothing is speaking it runs the same
+        //    forward ENDIF/ELSE scan as the other IF opcodes, so the block executes only
+        //    WHILE a speech line is playing. Typical use is `IF_SPEAKING { WAIT_SPEECH;
+        //    STOP_LIPSYNC }` — a catch-up guard after starting a line.
+        //
+        //    The port's speech is synchronous: 0xcd holds the subtitle for its duration
+        //    and returns, so by the time this executes the line is already finished and
+        //    the block is correctly skipped (its contents, 0xce/0x17a, are no-ops here
+        //    for the same reason). speechActive() is written against the real state
+        //    rather than hardcoding "skip", so it stays right if speech becomes async. --
+        case 0x1f9:
+            if (!speechActive()) { pc = skipBlock(*prog, pc, true); }
+            break;
+
+        // ---- inventory (RunProg_Exec cases 0xc / 0xd / 0x11, handlers @0x00463072 /
+        //      0x004630e4 / 0x0046333c) ----
+        // Each resolves its operand the same way:
+        //      id   = stricmp(objName(a0), "_current") == 0 ? g_nCurrentItem : a0
+        //      item = Inv_GetByTag(id)
+        // then adds / removes / searches the list. The port keeps the tag rather than an
+        // item record (it has no INVMANG item table), which is enough for the only thing
+        // scripts ask: is this item held.
+        //
+        // NOT MODELLED: the "_current" alias needs the engine's object-slot table
+        // (g_0070d6f0[a0], name at +0xd0), which Adv_InitAreaSlots builds and the port has
+        // no equivalent of — so a0 is always taken as the item tag. Also skipped:
+        // Adv_ScrollInv(9999,0) (scrolls the GV panel, which isn't rendered) and 0xd's
+        // drag-cancel (g_nDragSlot), since there is no drag-and-drop.
+        // -- current-item select / clear (cases 0x42 @0x00464166, 0x43 @0x004641f0).
+        //    A matched pair; 0x43 takes NO arguments (its arg slot holds junk — we have
+        //    seen the ASCII "vvws" there). Both run the same reset:
+        //        g_629f70 = -1        (item-in-use mode)
+        //        g_nCurrentItem       (0x007d67b4) = -1
+        //        g_7d5f30 = 1
+        //        g_nDragSlot          (0x00629c08) = -1     <- cancels any drag
+        //        g_nCursorMode        (0x00646754) = 3      (CURSINV)
+        //        Adv_ClearCursorState(); Win_UpdateCursor()
+        //    then 0x42 additionally sets g_nCurrentItem = a0 and the mode to 1 — i.e.
+        //    "start using item a0", where 0x43 is "cancel / nothing in hand".
+        //    The current item is what the "_current" alias in 0xc/0xd/0x11 resolves to.
+        //
+        //    NOT MODELLED: the drag slot (no drag-and-drop) and the forced cursor mode —
+        //    the engine's scene loop recomputes the cursor from the hovered area on the
+        //    very next iteration (Area_FindAt -> Curs_SetCursorByMode), as the port's
+        //    runScene/pumpFrame already do, so forcing it here would not survive a frame.
+        case 0x42:
+            Inventory::setCurrent(in.a0);
+            Log::info("CURRENT_ITEM = %d", in.a0);
+            break;
+        case 0x43:
+            Inventory::setCurrent(-1);
+            Log::info("CURRENT_ITEM cleared");
+            break;
+
+        case 0x0c:
+            Inventory::add(in.a0);
+            break;
+        case 0x0d:
+            Inventory::remove(in.a0);
+            break;
+        case 0x11:
+            if (!Inventory::has(in.a0)) { pc = skipBlock(*prog, pc, true); }
+            break;
+
         // -- IF guards: skip the following block when the condition holds --
         case 0x09:  if (var(in.a0) <= in.a1) pc = skipBlock(*prog, pc, true); break;  // IF_VAR_LE
         case 0x0a:  if (var(in.a0) != in.a1) pc = skipBlock(*prog, pc, true); break;  // IF_VAR_NE
@@ -418,7 +511,14 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
             int angle = 0, dist = 0;
             if (disp_.isRealtime()) {
                 int sx = disp_.mouseX(), sy = disp_.mouseY();
+                // Rubber band: GV_DragUpdate (@0x00433370) draws GI_Line(start, cursor) in
+                // colour 0xF1 every iteration of the engine's drag event loop. Hand the
+                // endpoint to pumpFrame so it is composited with the rest of the frame.
+                dragLineActive_ = true;
+                dragLineX_ = sx;
+                dragLineY_ = sy;
                 while (disp_.leftButtonHeld()) { if (!pumpFrame()) { break; } }
+                dragLineActive_ = false;
                 int dx = disp_.mouseX() - sx, dy = disp_.mouseY() - sy;
                 if (dx != 0 || dy != 0) {
                     double a = std::atan2((double)dy, (double)dx) * (180.0 / 3.14159265358979323846);
@@ -427,8 +527,17 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
                     dist  = (int)(std::sqrt((double)dx * dx + (double)dy * dy) + 0.5);
                 }
             }
-            if (sp + 2 <= 100) { valStack[sp++] = angle; valStack[sp++] = dist; }
+            // PUSH ORDER IS LOAD-BEARING. The engine (handler @0x00468027) passes
+            // Gran_GetAngleDist pAngle = &stack[sp+1] and pDist = &stack[sp], then sp += 2 —
+            // the value stack being at [ebp-0x590 + i*4], as op 0x173 PUSH confirms. So the
+            // ANGLE ends up on top and the script's first POP takes it:
+            //     0x1ff; POP var[11] <- angle; POP var[12] <- distance
+            // vvk prog12 then guards `IF var[12] <= 20` (drag too short) and
+            // `0x200 var[11] in [160,220]` (leftward drag) — which only make sense this way
+            // round. Pushing angle-then-dist swaps them and every drag silently does nothing.
+            if (sp + 2 <= 100) { valStack[sp++] = dist; valStack[sp++] = angle; }
             else { Log::warn("RunProg: value-stack overflow (0x1ff)"); }
+            Log::info("GRAN_GET_ANGLE_DIST angle=%d dist=%d", angle, dist);
             break;
         }
 
@@ -551,6 +660,41 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
 
         // -- flow --
         case 0x70:  pc = count; break;                      // END_SCRIPT
+        // ---- SCM voice mixing (RunProg_Exec cases 0x262/0x264/0x265/0x266/0x267/0x268) ----
+        // Verified against the dispatch table at 0x00468f27; RUNPROG_OPCODES.md had this
+        // whole block wrong (it listed generic "SND_SET_PAN/VOLUME/PITCH" names).
+        //
+        // 0x262/0x264/0x265: Snd_SetChannelPan(ch, GI_PercentOfWidth(a1, a2)) for mixer
+        // channels 1/3/2 — the three SCM bunch-audio voices (Audio::VOICE0..2). The pan is
+        // derived from a SCREEN X position, so a speaker's voice follows them across the
+        // frame. GI_PercentOfWidth (@0x0042f610) is x*100/width.
+        case 0x262:
+        case 0x264:
+        case 0x265: {
+            const int width = (in.a2 > 0) ? in.a2 : fb_.width();
+            const int pan   = (in.a1 * 100) / width;
+            const int voice = (in.op == 0x262) ? 0 : (in.op == 0x265) ? 1 : 2;  // mixer ch 1/2/3
+            Audio::setChannelPan(Audio::VOICE0 + voice, pan);
+            Log::info("SND_SET_PAN voice%d x=%d/%d -> pan %d", voice, in.a1, width, pan);
+            break;
+        }
+
+        // 0x266/0x267/0x268: Player_SetFlags / ClearFlags / ResetFlags (PLAYER.cpp
+        // @0x004589f0/0x00458a80/0x00458b10) on g_nPlayerVoiceMask, all taking ARG1.
+        // Note 0x267 is `mask &= a1` — an AND with the operand, not an AND-NOT.
+        case 0x266:
+            Audio::setVoiceMask(Audio::voiceMask() | (unsigned int)in.a1);
+            Log::info("PLAYER_VOICE_MASK |= 0x%x -> 0x%x", in.a1, Audio::voiceMask());
+            break;
+        case 0x267:
+            Audio::setVoiceMask(Audio::voiceMask() & (unsigned int)in.a1);
+            Log::info("PLAYER_VOICE_MASK &= 0x%x -> 0x%x", in.a1, Audio::voiceMask());
+            break;
+        case 0x268:
+            Audio::setVoiceMask((unsigned int)in.a1);
+            Log::info("PLAYER_VOICE_MASK = 0x%x", in.a1);
+            break;
+
         case 0x26a: pc = count; break;                      // BREAK_LOOP: end (engine also unwinds GOSUBs)
 
         // -- SND_PLAY_ON_OBJ_ONESHOT (RunProg_Exec case 0x26f, handler @0x00464c8b):
@@ -986,8 +1130,27 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
 
         // -- GV (verb/inventory toolbar) state. Toolbar rendering isn't ported, so
         //    these write GV state for a future toolbar (like 0x901/0x903). --
+        // -- GV_SetEnabled (@0x00432ad0, `g_nGVEnabled = arg`). Both take the value as an
+        //    IMMEDIATE in the handler, not from the instruction: 0x918 pushes 1, 0x919
+        //    pushes 0. Dispatched from the 0x8fe..0x91c table at 0x00469a6b, not the main
+        //    one. Op 0x917 (GV_CanDrop) returns 3 while disabled, which exit guards test. --
         case 0x918:  Gv::setEnabled(true);           break;  // GV_SetEnabled(1)
+        case 0x919:  Gv::setEnabled(false);          break;  // GV_SetEnabled(0)
         case 0x9c6:  Gv::setDestroyHandler(in.a0);   break;  // GV_SetDestroyHandler(a0)
+
+        // -- floating inventory panel. 0x9c4 is dispatched by a direct compare at
+        //    0x004628d1 (it is outside the main jump table's 1..0x2c4 range); the rest
+        //    come from the 0x9c5..0x9c9 table at 0x00469b3b. All take no arguments.
+        //      0x9c4 -> GV_OpenInventory  (@0x00432860)
+        //      0x9c7 -> GV_HideAndClean   (@0x00432210-thunk)
+        //      0x9c8 -> GV_TickInventory
+        //      0x9c9 -> GV_CloseInventory (@0x00432750)
+        //    The engine's panel is a native Win95 popup (see Gv.h); the port tracks the
+        //    open/closed state only. --
+        case 0x9c4:  Gv::setInventoryOpen(true);     break;  // GV_OpenInventory
+        case 0x9c7:                                          // GV_HideAndClean
+        case 0x9c9:  Gv::setInventoryOpen(false);    break;  // GV_CloseInventory
+        case 0x9c8:  Gv::tickInventory();            break;  // GV_TickInventory
         case 0x91c:  break;  // GV_RedrawInventory: redraws the GV window only if it's
                              // open; the toolbar window isn't rendered -> no-op
 
@@ -1199,6 +1362,21 @@ void RunProg::exec(const Scene& scene, int progId, int /*nId*/) {
         //    trigger frame; 0x15a clears. Anim::tick() queues the program when the anim
         //    reaches its trigger frame; dispatchAnimCallbacks() (after each tick) runs it. --
         case 0x3c:    pendingCb_ = in.a0; break;             // SET_CALLBACK_ID (iRam007c4998 = a0)
+
+        // -- ANIM_CLEAR_ALL_CALLBACKS (case 0x1aa, handler @0x00466628): no arguments;
+        //    Anim_ClearAllCompletionCallbacks (@0x00406ad0) walks all 0x96 slots calling
+        //    Anim_SetCompletionCallback(i, -1, -1, -1). Disarms every pending script
+        //    trigger, so none fires into a scene/cutscene that no longer expects it. --
+        case 0x1aa:   Anim::clearAllCompletionCallbacks(); break;
+
+        // -- ADV_TICK_FRAMES (cases 0x20c @0x00466e2c / 0x20e @0x00466e0f): let the world
+        //    run for a number of frames without the script doing anything — used to pace
+        //    a beat between actions. 0x20e takes the count LITERALLY IN ARG1; 0x20c reads
+        //    it from var[a0] and is skipped while the engine's fast-forward local is set
+        //    (the port has no fast-forward model, so it always ticks).
+        //    ⚠ RUNPROG_OPCODES.md called these SND_PLAY_SPEECH_BY_VAR/BY_ARG — wrong. --
+        case 0x20c:   tickFrames(var(in.a0)); break;
+        case 0x20e:   tickFrames(in.a1);      break;
         case 0x159: {                                        // arm cb to fire at the last frame
             int slot = animSlotFor(in.a0);
             if (slot >= 0) { Anim::setCompletionCallback(slot, pendingCb_, Anim::frameCount(slot) - 1); }

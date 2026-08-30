@@ -66,6 +66,15 @@ static void dumpProgram(const Scene& sc, const char* scene, int id) {
     std::printf("\n");
 }
 
+// List every type-4 (scene) resource in the archive: `dumpprog <datadir> --scenes`.
+// Needed to survey opcode usage across the whole game rather than the few rooms in play.
+static int listScenes(ResArchive& arc) {
+    for (const auto& en : arc.entries()) {
+        if (en.type == 4) { std::printf("%s\n", en.name.c_str()); }
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 3) {
         std::fprintf(stderr,
@@ -89,6 +98,8 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "error: cannot open archive in '%s'\n", dataDir);
         return 1;
     }
+    if (std::strcmp(scene, "--scenes") == 0) { return listScenes(arc); }
+
     Scene sc;
     if (!sc.load(arc, scene)) {
         std::fprintf(stderr, "error: scene '%s' not found / failed to load\n", scene);

@@ -40,6 +40,10 @@ void setMasterVolumeMillibels(int mb);
 // Per-channel linear gain (0..1). Theme volume 0..64 maps to v/64; fades ramp it.
 void setChannelGain(int channel, float gain);
 
+// Pan a channel: 0..100 with 50 = centre (Snd_SetChannelPan @0x00470520 / Mixer_SetVolume's
+// units). Negative leaves it centred. Ops 0x262/0x264/0x265 pan the three SCM voice channels.
+void setChannelPan(int channel, int pan);
+
 // Unplayed S16 samples still queued on `channel` (the sequencer's low-water mark).
 size_t queuedSamples(int channel);
 
@@ -52,6 +56,13 @@ void clearChannel(int channel);
 // mono), bit2 = 44100 Hz (else 22050). The source is converted to the device's
 // mono 22050 S16 (stereo downmixed, 44100 decimated).
 void queue(int channel, const uint8_t* data, size_t bytes, int fmt);
+
+// SCM voice-channel mask (PLAYER.cpp g_nPlayerVoiceMask, ops 0x266/0x267/0x268). Bit N
+// enables the Nth bunch-audio voice; a masked-off voice is not queued during SCM playback.
+// Reset to all-on between SCMs, as Player_ResetFlags does at the start of playback.
+void setVoiceMask(unsigned int mask);
+unsigned int voiceMask();
+bool voiceEnabled(int voice);
 
 // Play a one-shot effect on the first idle channel of the ONESHOT pool, mirroring
 // Fx_PlayAnyChar's 4..6 scan. Returns the channel used, or -1 when all are busy

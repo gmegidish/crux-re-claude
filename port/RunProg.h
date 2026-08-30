@@ -101,12 +101,29 @@ private:
     // Scene sound-table entry `idx` as raw type-32 PCM bytes (empty if unset/missing).
     std::vector<uint8_t> soundBytes(int idx, std::string& keyOut);
 
+    // Adv_TickFrames (@0x00412be0, ops 0x20c/0x20e): advance the world `n` frames —
+    // Adv_Tick() + Timer_DispatchAsyncProg() per frame, then spin until the frame boundary
+    // actually passes. The engine returns immediately when its cutscene/speech FSM
+    // (DAT_00629f50) is set; the port has no model of that flag, so it always ticks.
+    void tickFrames(int n);
+
     bool pumpFrame();                    // op 0x3b: advance/render one paced frame; false = stop
 
     // Subtitle currently on screen (op 0xcd/0x50). pumpFrame draws it over the composited
     // frame, so the world keeps running underneath instead of freezing on a snapshot.
     std::string speechText_;
+    // Drag rubber band (op 0x1ff / GV_DragUpdate). While a drag is in progress pumpFrame
+    // draws a line from the origin to the live cursor, as the engine's drag loop does.
+    static constexpr unsigned char kDragLineColor = 0xF1;   // GI_Line colour at 0x00433e3f
+    bool dragLineActive_ = false;
+    int  dragLineX_ = 0, dragLineY_ = 0;
+
     bool        pumpSkipped_ = false;    // a click/key arrived during the last pumpFrame
+
+    // SndMem_IsSpeaking (@0x004744f0): is a speech line playing right now? The port only
+    // "speaks" while showSpeech holds its subtitle, and that call blocks, so this is false
+    // everywhere an opcode can observe it.
+    bool speechActive() const { return !speechText_.empty(); }
 
     // Block until `slot` reaches its armed stop frame (ops 0x1f / 0x13b), pumping a
     // frame per iteration. Watchdog: if the wait outlives WAIT_WATCHDOG frames it logs

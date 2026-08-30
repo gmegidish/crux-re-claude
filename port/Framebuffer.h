@@ -23,6 +23,25 @@ public:
 
     void clear(uint8_t index = 0) { std::fill(pixels_.begin(), pixels_.end(), index); }
 
+    // gf_line / GI_DrawLine (@0x00430440, reached through gi_line @0x0042dad0): plot a
+    // 1px line in palette index `color`. Bresenham, clipped per-pixel to the framebuffer.
+    // Used for the drag rubber band (GV_DragUpdate draws it in colour 0xF1).
+    void drawLine(int x1, int y1, int x2, int y2, uint8_t color) {
+        int dx = x2 > x1 ? x2 - x1 : x1 - x2;
+        int dy = y2 > y1 ? y2 - y1 : y1 - y2;
+        const int sx = x1 < x2 ? 1 : -1;
+        const int sy = y1 < y2 ? 1 : -1;
+        dy = -dy;
+        int err = dx + dy;
+        for (;;) {
+            if (x1 >= 0 && x1 < W && y1 >= 0 && y1 < H) { pixels_[y1 * W + x1] = color; }
+            if (x1 == x2 && y1 == y2) { break; }
+            const int e2 = err * 2;
+            if (e2 >= dy) { err += dy; x1 += sx; }
+            if (e2 <= dx) { err += dx; y1 += sy; }
+        }
+    }
+
     // Set the palette from 256 RGB triples (8-bit per channel, 768 bytes).
     void setPaletteRGB(const uint8_t* rgb768) {
         std::copy(rgb768, rgb768 + 256 * 3, pal_.begin());

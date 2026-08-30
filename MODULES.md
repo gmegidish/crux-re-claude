@@ -27,6 +27,17 @@ The game runs entirely in a DirectDraw 320×480 (640×480 logical) surface and r
 Two distinct subsystems share this file:
 
 ### GV — Floating inventory panel (functions 0x00431210–0x00433370)
+
+**What "GV" stands for.** The *view* onto the Graninv (GRANular INVentory) — the window,
+not the item list. Evidence is the binary's own debug strings, which preserve the original
+names: `gv_init` / `gv_open` / `gv_close` / `gv_show` / `gv_hide` / `gv_winproc` /
+`gv_listview_winproc` / `gv_addbutton` / `gv_clipwin` / `gv_init_drag` / `gv_dodrag` /
+`gv_rotate`, and decisively **`gv_inv_update(int)`** — "inv" is a separate token there, so
+GV is not itself "inventory". They sit in `Graninv.cpp` beside the `gran_*` item logic,
+which carries the error string `"Graninv not open"` for this same window. ("View" is what
+the code demonstrably does; the expansion of the "G" is inference.)
+⚠ The port's old gloss "game-view / verb toolbar" was wrong — there is no verb toolbar;
+the `CreateToolbarEx` strip is part of the inventory panel (`gv_addbutton`).
 A detachable Win32 tool window (`GVClass`) that displays inventory items as large icons in a `SysListView32`. A `CreateToolbarEx` toolbar sits at the top, populated via `GV_AddButton`. When the player drags an item, `GV_LoadDragGraphics` loads source and destination item bitmaps into off-screen DirectDraw surfaces, and `GV_DragUpdate` renders them each tick rotated towards the drag direction via `GV_RotateBitmap` (2D rotation matrix in software). `GV_CanDrop` validates slot compatibility. The window runs on a separate Win32 message pump thread and synchronises with the game via a critical section.
 
 **Key GV globals:** `g_pGVWindow` (HWND), `g_pGVListView`, `g_pGVToolbar`, `g_pGVImageList`, `g_nGVOpen`, `g_nGVEnabled`, `g_nGVDragStartX/Y`, `g_nGVDragCurX/Y`
@@ -65,19 +76,89 @@ Core 2D blit library. Provides plain and RLE-compressed blits (opaque and transp
 
 ---
 
-## ⬜ ADVENT.cpp — Adventure / scripting engine
-**Address range:** `0x0040e3aa – 0x004132a0` (est.)  
-**Functions:** 47/47 unreversed
+## 🔶 ADVENT.cpp — Adventure / scripting engine
+**Address range:** `0x0040e3aa – 0x004132a0`
+**Functions:** 47 named — but **46 of 47 are EMPTY STUBS** (`tools/fidelity.py`: 2% solid).
+Only `Adv_AutoSaveRescue` has a real body. Everything the interaction layer runs on is prose:
+`Adv_RunScene`, `Adv_CursorHandler`, `Adv_GetVerb`, `Adv_FindVerbHandler`, `Adv_InitAreaSlots`,
+`Adv_UpdateHotspot`, `Adv_Tick`, `Adv_TickFrames`, and all 14 inventory functions.
+**Only 3 are dead** (`Adv_WaitForMouse`, `Adv_WaitForFrameOrMouse`, `Adv_LoadScreenshot`) —
+the rest are live (`tools/callers.py`), so `port/main.cpp`'s scene loop, verb dispatch,
+hotspot model and inventory are all clean-room guesses. **This is the highest-leverage
+module left to reverse.**
 
-Likely the game's script interpreter and adventure-game verb dispatcher. The name "ADVENT" is classic Sierra/LucasArts convention for the adventure engine layer. Probably handles verb+noun command resolution, script bytecode execution, room transitions, and object-interaction dispatch. Expected to be a heavy consumer of INVMANG, PLAYER, SCHED, and THEMES.
+### `Adv_RunScene` (0x004101f0) — reconciled against the port, 2026-08-30
+
+Loop head `0x004105ff`, back edge `0x0041111f`; everything before is once-per-scene:
+
+```
+Debug_Trace("run_scn") · Res_GetCurrentDiskNum · Txt_SetString · Theme_InitTimerTable
+Adv_SetDrawSuppressed · Adv_CompactInvList · Speech_SetTag · Adv_InitAreaSlots
+Speech_ResetPos · Anim_SetMainCharAnim
+  DAT_00629f50 = 1;  RunProg_Exec(cache slots 6, 0, 7);  DAT_00629f50 = 0
+Win_UpdateCursor · Anim_TickPalette · RunProg_RestorePaletteSnapshot
+  RunProg_Exec(cache slots 8, 3, 9)
+Curs_SetCursorByMode(-1) · Curs_Tick
+--- loop ---
+  Area_FindAt · Curs_SetCursorByMode
+  Adv_CursorHandler            <- BLOCKS on input, returns verb + node
+  Timer_ResetCounters · Adv_GetVerb
+  6 x { Adv_FindVerbHandler -> RunProg_Exec }
+  Mov_FindNearestNodeInBox -> Mov_PathfindTo -> Adv_FindVerbHandler -> RunProg_Exec
+  Timer_DispatchProg
+```
+
+The six lifecycle slots are indices into the scene's 15-entry cache-slot table, whose base
+is `0x007114d0` (**not** `0x007114c8`, which is `g_pScriptPrograms` — getting this wrong
+yields a bogus `{8,2,9,10,5,11}`). The port's `kLifecycleSlots = {6,0,7,8,3,9}` is CORRECT.
+
+**Port divergences still open:**
+1. Palette work (`Anim_TickPalette` + `RunProg_RestorePaletteSnapshot`) belongs BETWEEN the
+   two script groups; the port loads the palette before all six and re-applies after.
+2. `DAT_00629f50 = 1` wraps only the first group — that global is read at **31 sites inside
+   `RunProg_Exec`**, so the two groups run in different VM modes. The port runs all six alike.
+3. Clicking a hotspot walks there first; the port runs the handler immediately (no movement
+   subsystem at all, though `MOVEMENT.cpp` is 100% solid and portable).
+4. Six verb-dispatch arms vs the port's one; verbs 2/5/8/10/0xb unhandled.
+
+Structural and probably fine: the engine's loop blocks on input with animation ticked from a
+separate timer thread, while the port polls per frame.
 
 ---
 
-## ⬜ Advanim.cpp — Advanced / skeletal animation
-**Address range:** `0x00403955 – 0x0040e3a9` (est.)  
-**Functions:** 97 — the largest game file
+## 🔶 Advanim.cpp — Animation slot engine (NOT skeletal)
+**Address range:** `0x00403955 – 0x0040e3a9`
+**Functions:** 95 parsed, **43 stubs / 52 real bodies** (`tools/fidelity.py`: 54% solid).
+16 are never called (`tools/callers.py`).
 
-97 functions suggests this is either a full skeletal or sprite-sequence animation system, or a combined animation + scene composition layer. Given the "Adv" prefix shared with ADVENT, it may be the animated cutscene/character-animation engine. The large function count suggests clip management, frame blending, and callback scheduling.
+The bodies present are the simple accessors — `Anim_SetPosition`, `Anim_Freeze`,
+`Anim_SetStopFrame`, `Anim_MarkForDump`, `Anim_ProcessDumpQueue`, `Anim_AddByName` — and
+those can be trusted. The stubs are the hard half: **`Anim_HandleFrameTick` (0x004059c0)**,
+`Anim_AddByNum` (0x00409570, 14 callers — what ops 0x1/0x19/0x13ba really call),
+`Anim_BuildDrawOrder` (z-order), `Anim_ShowFrame*`, `Anim_LoadToMem`, `Anim_TickPalette`,
+`Anim_GetCurrentFrameRect` (hit-test rects).
+
+**`Anim_HandleFrameTick` end-of-anim branch (0x00406140), decoded 2026-08-30** — the port's
+model of this was wrong twice:
+```
+flags bit 4 (0x10) = LOOPING -> curFrame = 0, done
+flags bit 5 (0x20)           -> clamp to frameCount-1 ...then FALL THROUGH
+0x004061d1:                     Anim_MarkForDump(slot)      <- BOTH paths land here
+```
+So **a one-shot anim disposes of itself when it finishes**; it does not park on its last
+frame. `Anim_SetStopAtLastFrame` (the bit-5 setter, 0x00405540) has **zero callers**, so the
+bit-5 clamp is dead in practice — the plain mark-for-dump path is the only one taken.
+
+**Deferred dump.** `Anim_MarkForDump` (0x00405810) only flags + enqueues; the slot stays
+active, drawn and advancing until `Anim_ProcessDumpQueue` (0x004074d0) runs. The engine's own
+trace shows a mark and its dump back-to-back with no load between
+(`marking for dump: VVI2TOK at 6` / `dumping: VVI2TOK at 6`), so the queue drains at a FRAME
+BOUNDARY — the port drains it at the top of `Anim::tick()`. `RunProg` op 0x13 must mark, not
+free.
+
+**`Anim_RestoreCached` (0x0040d490) is an I/O cache, not a playback one:** a one-entry cache
+keyed by name that restores frame *handles* to avoid re-reading from CD. `Anim_AddByName`
+still resets `curFrame` to 0, so it is invisible to a port that loads from memory.
 
 ---
 
@@ -170,17 +251,21 @@ handler program for that verb:
 edge (op `0x150` walk-to + `0x65` GOSUB) → next room. Example (MAP): corner nodes 6/8/15/16
 have `verb 0 → -1`, `verb 4 → progs 22/28/59/60`; `exitNames=[doors,villa,thing,telecom,gazbig,roads]`.
 
-**⚠ Port bug — "click exit → wrong room":** `port/main.cpp` only dispatches verb 0 (left)
-/ 1 (right) on a click and **never fires verb 4/6 on hotspot enter/leave**, so edge exits
-are unreachable by their intended path; a click instead resolves to the full-screen
-background node (e.g. MAP node 9, `verb 0 → prog 33`) → wrong/unexpected transition. The
-fix is in the interaction layer (fire verb 4/6 on hotspot change), **not** in parsing.
-The port also omits `Area_FindAt`'s sprite-area list (`Anim_GetCurrentFrameRect` dynamic
-bbox), which is how `(-1,-1,-1,-1)` anim nodes (menu flowers, characters) become hittable.
+**✅ FIXED (was: "click exit → wrong room"):** `port/main.cpp` used to dispatch only verb 0/1
+on a click and never fire verb 4/6 on hotspot enter/leave, so edge exits were unreachable and
+a click fell through to the full-screen background node. `runScene` now does enter/leave
+dispatch (commit ee1a10d) and `Area::cacheRecordAt` provides the cache hit-strips that make
+`(-1,-1,-1,-1)` anim nodes hittable (49a9182). `RunProg::nodeAt` owns the hit-test for both
+the render loop and `pumpFrame`'s cursor, so the two cannot drift.
+Still missing vs `Adv_CursorHandler`: verbs 2 (middle), 5 (hover-hold), 8 (idle), 10 (drag-over)
+and 0xb (keyboard), and the walk-to-then-act path (`Mov_FindNearestNodeInBox` +
+`Mov_PathfindTo` before the handler).
 
 ---
 
 ## ✅ BANI.cpp — Block-animation image codec
+
+**What "BANI" stands for:** **B**lock **ANI**mation. `ANI` is certain — the engine's whole animation layer is `ani_*` (`ani_add_onscreen`, `find_free_ani`, `ani_notify_at_frm`, `ani_mark_dump_by_num`). `B` is `block`: the format is a grid of independently-compressed blocks (9-byte header carrying width/height/blockW/blockH) and every entry point in the file is a block writer — `put_block`, `put_block_copy`, `put_block_skip8` / `skip16` / `skip64`, `put_block_brun16`, each with an `_indi` twin. Two names decode from the same strings: `brun` = byte-run (RLE), and `indi` = *indirect*, the palette-remapped variants that push each decoded index through `xlat_tbl[256]`.
 **Address range:** `0x00414f90 – 0x00417df0`  
 **Functions:** 19/19 (+2 CURSORS boundary functions at `0x00417e80`/`0x00418210`)  
 **Output:** `src/BANI.cpp`, `src/BANI.h`

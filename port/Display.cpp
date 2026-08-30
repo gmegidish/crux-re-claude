@@ -19,6 +19,11 @@ bool Display::open(const char* title, int scale) {
         headless_ = true;
         return true;
     }
+    // Nearest-neighbour upscale: the game is 640x480 8-bit pixel art, and SDL's default
+    // "linear" filter turns an integer scale-up into mush. Set before the texture exists —
+    // the hint is sampled at texture creation.
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
+
     renderer_ = SDL_CreateRenderer(window_, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!renderer_) renderer_ = SDL_CreateRenderer(window_, -1, 0);
     if (!renderer_) {
